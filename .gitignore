@@ -1,0 +1,18 @@
+# Local configuration and editor files
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+
+# Local agent tools and working notes
+.agents/
+.codex/
+.claude/
+PROJECT_MAP.md
+WORK_CONTEXT.md
+
+# Local caches and logs
+.cache/
+*.log

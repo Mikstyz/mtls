@@ -1,0 +1,6 @@
+# Build output
+**/target/
+**/bin/
+*.exe
+*.test
+*.out
