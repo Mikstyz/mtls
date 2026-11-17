@@ -16,3 +16,6 @@ WORK_CONTEXT.md
 # Local caches and logs
 .cache/
 *.log
+
+# Local service configuration may contain database credentials
+/config.toml
