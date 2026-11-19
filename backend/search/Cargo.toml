@@ -1,0 +1,15 @@
+[package]
+name = "mtls-search"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+serde = { version = "1", features = ["derive"] }
+subtle = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-postgres = { version = "0.7", features = ["with-uuid-1"] }
+toml = "0.9"
+uuid = { version = "1", features = ["serde"] }

@@ -19,3 +19,29 @@ WORK_CONTEXT.md
 
 # Local service configuration may contain database credentials
 /config.toml
+
+# Local databases, backups, and private keys
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.dump
+*.backup
+*.rdb
+*.aof
+appendonlydir/
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Temporary work files
+/tmp/
+
+# Default local media storage
+/media_dir/
