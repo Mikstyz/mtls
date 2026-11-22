@@ -84,7 +84,11 @@ func (h *Handler) changeAuthorRemoval(w http.ResponseWriter, r *http.Request, re
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	author, err := h.user.author(ctx, r)
+	sessionPath := "/api/users/me/participation"
+	if !restore {
+		sessionPath = "/api/users/me"
+	}
+	author, err := h.user.sessionUser(ctx, r, sessionPath)
 
 	if err != nil {
 		writeContentError(w, r, err)
@@ -103,13 +107,15 @@ func (h *Handler) changeAuthorRemoval(w http.ResponseWriter, r *http.Request, re
 
 func writeContentError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, errForbidden):
+		http.Error(w, "forbidden", http.StatusForbidden)
 	case errors.Is(err, errUnauthorized):
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-	case errors.Is(err, errMediaUnavailable), errors.Is(err, catalog.ErrDraftNotFound), errors.Is(err, catalog.ErrPostNotFound):
+	case errors.Is(err, catalog.ErrSalesDisabled), errors.Is(err, errMediaUnavailable), errors.Is(err, catalog.ErrDraftNotFound), errors.Is(err, catalog.ErrPostNotFound):
 		http.NotFound(w, r)
 	case errors.Is(err, catalog.ErrInvalidDraft):
 		http.Error(w, "invalid draft", http.StatusBadRequest)
-	case errors.Is(err, catalog.ErrDraftVersionConflict):
+	case errors.Is(err, catalog.ErrOfferConflict), errors.Is(err, catalog.ErrDraftVersionConflict):
 		http.Error(w, "conflict", http.StatusConflict)
 	default:
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)

@@ -24,6 +24,10 @@ func (s *Store) ClaimEmailVerificationMail(ctx context.Context, key []byte, prev
 	return s.claimAccountMail(ctx, key, "verify_email", previousKeys)
 }
 
+func (s *Store) ClaimEmailChangeMail(ctx context.Context, key []byte, previousKeys ...[]byte) (PasswordResetMail, error) {
+	return s.claimAccountMail(ctx, key, "change_email", previousKeys)
+}
+
 func (s *Store) claimAccountMail(ctx context.Context, key []byte, purpose string, previousKeys [][]byte) (PasswordResetMail, error) {
 	if _, err := registrationAEAD(key); err != nil {
 		return PasswordResetMail{}, err
@@ -46,10 +50,9 @@ func (s *Store) claimAccountMail(ctx context.Context, key []byte, purpose string
 			UPDATE password_resets p SET lease_id = $1,
 				lease_until = CURRENT_TIMESTAMP + INTERVAL '2 minutes', attempts = attempts + 1
 			FROM selected WHERE p.id = selected.id
-			RETURNING p.id, p.user_id, p.token_nonce, p.token_ciphertext
+			RETURNING p.id, COALESCE(p.pending_email,p.email) AS recipient, p.token_nonce, p.token_ciphertext
 		)
-		SELECT claimed.id, c.email, claimed.token_nonce, claimed.token_ciphertext
-		FROM claimed JOIN credentials c ON c.user_id = claimed.user_id`
+		SELECT id, recipient, token_nonce, token_ciphertext FROM claimed`
 
 	var job PasswordResetMail
 	var nonce, ciphertext []byte

@@ -13,7 +13,7 @@ func (h *Handler) activeAccountsForViewer(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
 
-	viewer, ok := h.authenticate(w, r.WithContext(ctx))
+	viewer, ok := h.authenticateParticipant(w, r.WithContext(ctx))
 	if !ok {
 		return
 	}

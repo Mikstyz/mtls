@@ -39,6 +39,13 @@ func (h *Handler) serveFeed(w http.ResponseWriter, r *http.Request, candidatesOn
 
 	if !candidatesOnly {
 		filter.Limit++
+		if len(r.Header.Values("X-Viewer-ID")) != 0 {
+			filter.Viewer = accessHeaderID(r.Header, "X-Viewer-ID")
+			if filter.Viewer == uuid.Nil {
+				http.Error(w, "invalid viewer", http.StatusBadRequest)
+				return
+			}
+		}
 	}
 
 	posts, err := h.catalog.ListPublic(ctx, filter)
@@ -66,7 +73,11 @@ func (h *Handler) serveFeed(w http.ResponseWriter, r *http.Request, candidatesOn
 	var next *catalog.FeedPosition
 	if len(posts) > limit {
 		posts = posts[:limit]
-		next = &posts[limit-1].FeedPosition
+		position := posts[limit-1].FeedPosition
+		if filter.Recommended {
+			position.PublishedAt = posts[limit-1].RecommendationPosition
+		}
+		next = &position
 	}
 	_ = json.NewEncoder(w).Encode(struct {
 		Posts []catalog.FeedPost    `json:"posts"`
@@ -82,12 +93,17 @@ func readFeedFilter(rawQuery string) (catalog.Filter, bool) {
 	}
 
 	for name, list := range params {
-		if len(list) != 1 || (name != "kind" && name != "author" && name != "limit" && name != "before_time" && name != "before_id") {
+		if len(list) != 1 || (name != "order" && name != "length" && name != "kind" && name != "author" && name != "limit" && name != "before_time" && name != "before_id") {
 			return catalog.Filter{}, false
 		}
 	}
 
-	filter := catalog.Filter{Kind: params.Get("kind"), Limit: 20}
+	order := params.Get("order")
+	if order != "" && order != "recent" && order != "recommended" {
+		return catalog.Filter{}, false
+	}
+
+	filter := catalog.Filter{Recommended: order == "recommended", Kind: params.Get("kind"), Length: params.Get("length"), Limit: 20}
 
 	if params.Has("limit") {
 		limit, err := strconv.Atoi(params.Get("limit"))

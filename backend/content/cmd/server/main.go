@@ -119,6 +119,10 @@ func run() error {
 		return err
 	}
 
+	if err := validateSalesPrivileges(ctx, db, service.TestSales, false); err != nil {
+		return err
+	}
+
 	var purger httpapi.Purger
 	purgeConfigured := service.PurgeSecret != "" || service.PreviousPurgeSecret != "" || service.Database.PurgeUser != "" || service.Database.PurgePassword != nil
 	if purgeConfigured {
@@ -143,11 +147,17 @@ func run() error {
 		if err := validatePurgePrivileges(ctx, purgeDB); err != nil {
 			return err
 		}
+		if err := validateSalesPrivileges(ctx, purgeDB, false, true); err != nil {
+			return err
+		}
 		purger = catalog.New(purgeDB)
 	}
 
 	store := catalog.New(db)
-	handler, err := httpapi.NewConfigured(store, purger, service.InternalSecret, service.PreviousInternalSecret, service.User.URL, service.User.CookieName, service.PurgeSecret, service.PreviousPurgeSecret, service.MediaViewSecret)
+	if service.TestSales {
+		store = catalog.NewWithTestSales(db)
+	}
+	handler, err := httpapi.NewConfigured(store, purger, service.InternalSecret, service.PreviousInternalSecret, service.User.URL, service.User.CookieName, service.PurgeSecret, service.PreviousPurgeSecret, service.MediaViewSecret, service.User.TLS, httpapi.CoverFramePeer{URL: service.Media.URL, Secret: service.Media.Secret}, httpapi.DeliverySecrets{ProfilePoints: service.ProfilePointsSecret, MediaRevocation: service.MediaRevocationSecret})
 
 	if err != nil {
 		return err
@@ -165,6 +175,34 @@ func run() error {
 
 	if err != nil {
 		return fmt.Errorf("listen content: %w", err)
+	}
+
+	defer listener.Close()
+
+	stop, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	if !service.RecoveryMode && service.User.URL != "" {
+		publicationSecret := service.User.PublicationSecret
+		if service.User.TLS.PeerCertFile == "" {
+			if publicationSecret != "" {
+				return errors.New("separate scheduled publication credential requires mutual TLS")
+			}
+
+			publicationSecret = service.InternalSecret
+		} else {
+			for _, secret := range []string{service.InternalSecret, service.PreviousInternalSecret, service.PurgeSecret, service.PreviousPurgeSecret, service.MediaViewSecret, service.ProfilePointsSecret, service.MediaRevocationSecret} {
+				if secret != "" && publicationSecret == secret {
+					return errors.New("scheduled publication credential must be distinct")
+				}
+			}
+		}
+
+		stopSchedules, err := httpapi.StartScheduledPosts(stop, store, service.User.URL, service.User.CookieName, publicationSecret, service.User.TLS)
+		if err != nil {
+			return err
+		}
+		defer stopSchedules()
 	}
 
 	maxConnections := service.MaxConnections
@@ -186,9 +224,6 @@ func run() error {
 	go func() {
 		done <- server.Serve(listener)
 	}()
-	stop, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-
 	select {
 	case err := <-done:
 

@@ -13,8 +13,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const maxDepth = 32
-
 var ErrStorageBusy = errors.New("media storage is busy")
 
 type Store struct {
@@ -106,7 +104,7 @@ func (s *Store) deleteLocked(id uuid.UUID) error {
 		return fmt.Errorf("open media directory: %w", err)
 	}
 
-	if err := removeContents(fd, 0); err != nil {
+	if err := removeFiles(fd); err != nil {
 		return fmt.Errorf("remove media contents: %w", err)
 	}
 
@@ -140,17 +138,13 @@ func openDirectory(parent int, name string) (int, error) {
 	})
 }
 
-func removeContents(fd, depth int) error {
+func removeFiles(fd int) error {
 	file := os.NewFile(uintptr(fd), "media-directory")
 	if file == nil {
 		_ = unix.Close(fd)
 		return errors.New("invalid directory handle")
 	}
 	defer file.Close()
-
-	if depth > maxDepth {
-		return errors.New("media directory nesting limit exceeded")
-	}
 
 	for {
 		names, err := file.Readdirnames(128)
@@ -159,8 +153,10 @@ func removeContents(fd, depth int) error {
 		}
 
 		for _, name := range names {
-			if err := removeEntry(fd, name, depth); err != nil {
-				return err
+			// Prepared sets and staging directories contain only files.
+			// Unlinking without AT_REMOVEDIR also refuses nested directories.
+			if err := unix.Unlinkat(fd, name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+				return fmt.Errorf("remove media entry: %w", err)
 			}
 		}
 
@@ -168,35 +164,6 @@ func removeContents(fd, depth int) error {
 			return nil
 		}
 	}
-}
-
-func removeEntry(parent int, name string, depth int) error {
-	var info unix.Stat_t
-	if err := unix.Fstatat(parent, name, &info, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		if errors.Is(err, unix.ENOENT) {
-			return nil
-		}
-		return fmt.Errorf("inspect media entry: %w", err)
-	}
-
-	if info.Mode&unix.S_IFMT == unix.S_IFDIR {
-		child, err := openDirectory(parent, name)
-		if err != nil {
-			return fmt.Errorf("open media child directory: %w", err)
-		}
-		if err := removeContents(child, depth+1); err != nil {
-			return err
-		}
-		if err := unix.Unlinkat(parent, name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
-			return fmt.Errorf("remove media child directory: %w", err)
-		}
-		return nil
-	}
-
-	if err := unix.Unlinkat(parent, name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
-		return fmt.Errorf("remove media entry: %w", err)
-	}
-	return nil
 }
 
 func (s *Store) Close() error {

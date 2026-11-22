@@ -53,14 +53,15 @@ func (h *Handler) publishDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, value := range draft.MediaIDs {
+	var duration *int64
+	for i, value := range draft.MediaIDs {
 		media, err := uuid.Parse(value)
 		if err != nil {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
 
-		kind, err := h.user.ownedMediaKind(ctx, r, media)
+		kind, length, err := h.user.ownedMedia(ctx, r, media)
 		if err != nil {
 			writeContentError(w, r, err)
 			return
@@ -69,9 +70,12 @@ func (h *Handler) publishDraft(w http.ResponseWriter, r *http.Request) {
 			writeContentError(w, r, catalog.ErrInvalidDraft)
 			return
 		}
+		if i == 0 {
+			duration = length
+		}
 	}
 
-	next, err := h.catalog.PublishPost(ctx, author, id, input.Revision, input.Visibility)
+	next, err := h.catalog.PublishPost(ctx, author, id, input.Revision, input.Visibility, duration)
 	if err != nil {
 		writeContentError(w, r, err)
 		return
@@ -98,6 +102,10 @@ func readPostRevision(w http.ResponseWriter, r *http.Request) (uuid.UUID, int64,
 }
 
 func readPostCommand(w http.ResponseWriter, r *http.Request, input any) (uuid.UUID, bool) {
+	return readPostCommandLimit(w, r, input, 512)
+}
+
+func readPostCommandLimit(w http.ResponseWriter, r *http.Request, input any, limit int64) (uuid.UUID, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	mediaType, _, mediaErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
 
@@ -106,7 +114,7 @@ func readPostCommand(w http.ResponseWriter, r *http.Request, input any) (uuid.UU
 		return uuid.Nil, false
 	}
 
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	decoder.DisallowUnknownFields()
 
 	if decoder.Decode(input) != nil || decoder.Decode(new(any)) != io.EOF {

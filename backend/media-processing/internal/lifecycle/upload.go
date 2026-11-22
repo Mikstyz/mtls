@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // Quota limits original upload reservations owned by one account.
@@ -117,12 +118,31 @@ func (s *Store) ReserveUpload(ctx context.Context, owner, request uuid.UUID, kin
 	return Asset{ID: id, State: "reserved"}, nil
 }
 
+// BeginUpload pins the transfer mode before any request reads into quarantine.
+func (s *Store) BeginUpload(ctx context.Context, owner, id uuid.UUID, size int64, digest [32]byte, resumable bool) error {
+	mode := "whole"
+	if resumable {
+		mode = "resumable"
+	}
+
+	var allowed bool
+	const query = `SELECT public.media_begin_upload($1,$2,$3,$4,$5)`
+	if err := s.db.QueryRowContext(ctx, query, owner, id, size, digest[:], mode).Scan(&allowed); err != nil {
+		return fmt.Errorf("begin upload transfer: %w", err)
+	}
+	if !allowed {
+		return ErrConflict
+	}
+
+	return nil
+}
+
 // CheckUpload checks a private reservation; caller must authenticate the owner separately.
 func (s *Store) CheckUpload(ctx context.Context, owner, id uuid.UUID, size int64, digest [32]byte) error {
 	if owner == uuid.Nil || id == uuid.Nil || size < 1 || size > 1<<40 {
 		return ErrInvalid
 	}
-	const query = `SELECT EXISTS (SELECT 1 FROM media_assets a JOIN media_uploads u ON u.asset_id = a.id WHERE a.id = $1 AND a.owner_id = $2 AND a.state = 'reserved' AND u.byte_size = $3 AND u.sha256 = $4)`
+	const query = `SELECT EXISTS (SELECT 1 FROM media_assets a JOIN media_uploads u ON u.asset_id = a.id WHERE a.id = $1 AND a.owner_id = $2 AND a.state = 'reserved' AND NOT u.uploaded AND u.byte_size = $3 AND u.sha256 = $4)`
 	var allowed bool
 	if err := s.db.QueryRowContext(ctx, query, id, owner, size, digest[:]).Scan(&allowed); err != nil {
 		return fmt.Errorf("check upload reservation: %w", err)
@@ -190,31 +210,31 @@ func (s *Store) UploadComplete(ctx context.Context, owner, id uuid.UUID, size in
 	return uploaded, nil
 }
 
+type UploadProgress struct {
+	State       string   `json:"state"`
+	CoverFrames []string `json:"cover_frames,omitempty"`
+	Offset      *int64   `json:"upload_offset,omitempty"`
+	Resumable   bool     `json:"-"`
+}
+
 // UploadStatus reports processing progress to the owner, without exposing storage paths.
-func (s *Store) UploadStatus(ctx context.Context, owner, id uuid.UUID) (string, error) {
+func (s *Store) UploadStatus(ctx context.Context, owner, id uuid.UUID) (UploadProgress, error) {
 	if owner == uuid.Nil || id == uuid.Nil {
-		return "", ErrInvalid
+		return UploadProgress{}, ErrInvalid
 	}
 
-	const query = `SELECT CASE
-		WHEN a.state = 'processed' THEN 'processed'
-		WHEN a.kind = 'photo' AND a.photo_attempts >= 5 AND
-			(a.state = 'reserved' OR a.lease_until <= clock_timestamp()) THEN 'failed'
-		WHEN a.state = 'processing' THEN 'processing'
-		WHEN u.uploaded THEN 'uploaded'
-		ELSE 'reserved'
-		END
-		FROM media_assets a JOIN media_uploads u ON u.asset_id = a.id
+	const query = `SELECT ` + uploadState + `, public.media_upload_cover_frames($2,$1), COALESCE(u.transfer_mode='resumable' AND NOT u.uploaded, false)
+        FROM media_assets a JOIN media_uploads u ON u.asset_id = a.id
 		WHERE a.id = $1 AND a.owner_id = $2 AND a.state <> 'deleting'`
 
-	var state string
-	err := s.db.QueryRowContext(ctx, query, id, owner).Scan(&state)
+	var progress UploadProgress
+	err := s.db.QueryRowContext(ctx, query, id, owner).Scan(&progress.State, pq.Array(&progress.CoverFrames), &progress.Resumable)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNotFound
+		return UploadProgress{}, ErrNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("read upload status: %w", err)
+		return UploadProgress{}, fmt.Errorf("read upload status: %w", err)
 	}
 
-	return state, nil
+	return progress, nil
 }

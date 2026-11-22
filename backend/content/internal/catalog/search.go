@@ -3,24 +3,24 @@ package catalog
 import (
 	"context"
 	"fmt"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"mtls/shared/searchtext"
 )
 
 // PublicSearchCandidate is an internal result that still requires an auth/user check.
 type PublicSearchCandidate struct {
-	ID       uuid.UUID `json:"id"`
-	AuthorID uuid.UUID `json:"author_id"`
-	Kind     string    `json:"kind"`
-	Title    string    `json:"title"`
+	ID           uuid.UUID  `json:"id"`
+	AuthorID     uuid.UUID  `json:"author_id"`
+	Kind         string     `json:"kind"`
+	Title        string     `json:"title"`
+	CoverMediaID *uuid.UUID `json:"cover_media_id,omitempty"`
 }
 
 // RecheckPublicSearch preserves candidate order and discards stale or private entries.
-func (s *Store) RecheckPublicSearch(ctx context.Context, ids []uuid.UUID, query string) ([]PublicSearchCandidate, error) {
-	if len(ids) > 50 || strings.TrimSpace(query) == "" || len(query) > 256 || !utf8.ValidString(query) || strings.ContainsRune(query, 0) {
+func (s *Store) RecheckPublicSearch(ctx context.Context, ids []uuid.UUID, query, prefix string) ([]PublicSearchCandidate, error) {
+	if len(ids) > 50 || !searchtext.Valid(query, prefix) {
 		return nil, ErrInvalidFilter
 	}
 
@@ -44,14 +44,16 @@ func (s *Store) RecheckPublicSearch(ctx context.Context, ids []uuid.UUID, query 
 		return []PublicSearchCandidate{}, nil
 	}
 
-	const querySQL = `SELECT p.id, p.author_id, p.media_kind, p.title
+	const querySQL = `SELECT p.id, p.author_id, p.media_kind, p.title,
+		` + postCoverMedia + `
 		FROM unnest($1::uuid[]) WITH ORDINALITY AS candidate(id, position)
 		JOIN content_posts p ON p.id = candidate.id
-		WHERE p.status = 'published' AND p.visibility = 'public'
-			AND to_tsvector('simple', p.title) @@ plainto_tsquery('simple', $2)
+		WHERE p.status = 'published' AND p.hidden_by_case IS NULL AND p.visibility = 'public'
+			AND NOT EXISTS (SELECT 1 FROM content_author_purges a WHERE a.author_id = p.author_id)
+			AND to_tsvector('simple', p.title) @@ ` + searchtext.SQLQuery + `
 		ORDER BY candidate.position`
 
-	rows, err := s.db.QueryContext(ctx, querySQL, pq.Array(raw), query)
+	rows, err := s.db.QueryContext(ctx, querySQL, pq.Array(raw), query, prefix)
 
 	if err != nil {
 		return nil, fmt.Errorf("recheck public search: %w", err)
@@ -62,9 +64,14 @@ func (s *Store) RecheckPublicSearch(ctx context.Context, ids []uuid.UUID, query 
 
 	for rows.Next() {
 		var candidate PublicSearchCandidate
+		var cover uuid.NullUUID
 
-		if err := rows.Scan(&candidate.ID, &candidate.AuthorID, &candidate.Kind, &candidate.Title); err != nil {
+		if err := rows.Scan(&candidate.ID, &candidate.AuthorID, &candidate.Kind, &candidate.Title, &cover); err != nil {
 			return nil, fmt.Errorf("read public search result: %w", err)
+		}
+
+		if cover.Valid {
+			candidate.CoverMediaID = &cover.UUID
 		}
 
 		results = append(results, candidate)

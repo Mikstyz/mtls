@@ -77,7 +77,7 @@ func (h *Handler) listDrafts(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	author, err := h.user.author(ctx, r)
+	author, err := h.user.sessionUser(ctx, r, "/api/users/me")
 
 	if errors.Is(err, errUnauthorized) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -97,19 +97,21 @@ func (h *Handler) listDrafts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type result struct {
-		ID          uuid.UUID `json:"id"`
-		Kind        string    `json:"kind"`
-		Title       string    `json:"title"`
-		Description string    `json:"description"`
-		CreatedAt   time.Time `json:"created_at"`
-		Revision    int64     `json:"revision"`
-		MediaIDs    []string  `json:"media_ids"`
+		ID                uuid.UUID  `json:"id"`
+		Kind              string     `json:"kind"`
+		Title             string     `json:"title"`
+		Description       string     `json:"description"`
+		CreatedAt         time.Time  `json:"created_at"`
+		Revision          int64      `json:"revision"`
+		MediaIDs          []string   `json:"media_ids"`
+		PublishAt         *time.Time `json:"publish_at,omitempty"`
+		PlannedVisibility *string    `json:"planned_visibility,omitempty"`
 	}
 
 	output := make([]result, 0, len(drafts))
 
 	for _, draft := range drafts {
-		output = append(output, result{draft.ID, draft.Kind, draft.Title, draft.Description, draft.CreatedAt, draft.Revision, draft.MediaIDs})
+		output = append(output, result{draft.ID, draft.Kind, draft.Title, draft.Description, draft.CreatedAt, draft.Revision, draft.MediaIDs, draft.PublishAt, draft.PlannedVisibility})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

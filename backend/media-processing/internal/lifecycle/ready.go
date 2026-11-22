@@ -10,18 +10,20 @@ import (
 )
 
 type ReadyEvent struct {
-	AssetID uuid.UUID
-	OwnerID uuid.UUID
+	AssetID        uuid.UUID
+	OwnerID        uuid.UUID
+	Kind           string
+	DurationMillis *int64
 }
 
 func (s *Store) NextReadyEvent(ctx context.Context) (ReadyEvent, error) {
-	const query = `SELECT e.asset_id, a.owner_id FROM media_ready_events e
+	const query = `SELECT e.asset_id, a.owner_id, a.kind, a.duration_ms FROM media_ready_events e
 		JOIN media_assets a ON a.id = e.asset_id
 		WHERE a.state = 'processed' AND e.available_at <= CURRENT_TIMESTAMP
 		ORDER BY e.available_at, e.asset_id LIMIT 1`
 
 	var event ReadyEvent
-	err := s.db.QueryRowContext(ctx, query).Scan(&event.AssetID, &event.OwnerID)
+	err := s.db.QueryRowContext(ctx, query).Scan(&event.AssetID, &event.OwnerID, &event.Kind, &event.DurationMillis)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReadyEvent{}, ErrNotFound

@@ -1,4 +1,5 @@
 mod access;
+mod hls;
 mod http;
 mod representation;
 mod state;

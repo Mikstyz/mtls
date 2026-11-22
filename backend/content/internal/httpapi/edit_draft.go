@@ -10,10 +10,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"mtls/content/internal/catalog"
 )
 
 func (h *Handler) editDraft(w http.ResponseWriter, r *http.Request) {
+	h.editPostText(w, r, h.catalog.EditDraft)
+}
+
+func (h *Handler) editPublication(w http.ResponseWriter, r *http.Request) {
+	h.editPostText(w, r, h.catalog.EditPublishedPost)
+}
+
+func (h *Handler) editPostText(w http.ResponseWriter, r *http.Request, edit func(context.Context, uuid.UUID, uuid.UUID, int64, string, string) (int64, error)) {
 	if !h.authorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -70,30 +77,14 @@ func (h *Handler) editDraft(w http.ResponseWriter, r *http.Request) {
 
 	author, err := h.user.author(ctx, r)
 
-	if errors.Is(err, errUnauthorized) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	if err != nil {
-		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		writeContentError(w, r, err)
 		return
 	}
 
-	revision, err := h.catalog.EditDraft(ctx, author, id, *input.Revision, *input.Title, *input.Description)
-
-	switch {
-	case errors.Is(err, catalog.ErrInvalidDraft):
-		http.Error(w, "invalid request", http.StatusBadRequest)
-		return
-	case errors.Is(err, catalog.ErrDraftNotFound):
-		http.NotFound(w, r)
-		return
-	case errors.Is(err, catalog.ErrDraftVersionConflict):
-		http.Error(w, "conflict", http.StatusConflict)
-		return
-	case err != nil:
-		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	revision, err := edit(ctx, author, id, *input.Revision, *input.Title, *input.Description)
+	if err != nil {
+		writeContentError(w, r, err)
 		return
 	}
 

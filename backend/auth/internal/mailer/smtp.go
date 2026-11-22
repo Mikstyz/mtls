@@ -75,6 +75,10 @@ func (s SMTP) SendEmailVerification(ctx context.Context, recipient, token string
 	return s.send(ctx, recipient, token, "/auth/verify-email", "Verify your email")
 }
 
+func (s SMTP) SendEmailChange(ctx context.Context, recipient, token string) error {
+	return s.send(ctx, recipient, token, "/auth/change-email", "Confirm your new email")
+}
+
 func (s SMTP) send(ctx context.Context, recipient, token, path, subject string) error {
 	address, err := mail.ParseAddress(recipient)
 

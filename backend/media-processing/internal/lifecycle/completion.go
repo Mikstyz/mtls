@@ -12,20 +12,24 @@ import (
 
 // CheckPhotoLease permits only the current worker or an exact completion replay.
 func (s *Store) CheckPhotoLease(ctx context.Context, id, lease uuid.UUID) error {
+	return s.checkLease(ctx, id, lease, "photo")
+}
+
+func (s *Store) checkLease(ctx context.Context, id, lease uuid.UUID, kind string) error {
 	if id == uuid.Nil || lease == uuid.Nil {
 		return ErrInvalid
 	}
 
 	const query = `SELECT EXISTS (SELECT 1 FROM media_assets
-		WHERE id = $1 AND kind = 'photo' AND (
+		WHERE id = $1 AND kind = $3 AND (
 			(state = 'processing' AND lease_token = $2 AND lease_until > clock_timestamp())
 			OR (state = 'processed' AND processed_lease_token = $2)
 		))`
 
 	var allowed bool
 
-	if err := s.db.QueryRowContext(ctx, query, id, lease).Scan(&allowed); err != nil {
-		return fmt.Errorf("check photo processing lease: %w", err)
+	if err := s.db.QueryRowContext(ctx, query, id, lease, kind).Scan(&allowed); err != nil {
+		return fmt.Errorf("check media processing lease: %w", err)
 	}
 
 	if !allowed {
@@ -37,40 +41,48 @@ func (s *Store) CheckPhotoLease(ctx context.Context, id, lease uuid.UUID) error 
 
 // MarkPhotoProcessed records a worker's complete manifest; it does not grant access.
 func (s *Store) MarkPhotoProcessed(ctx context.Context, id, lease uuid.UUID, variants []Variant) error {
-	if id == uuid.Nil || lease == uuid.Nil || !validPhotoVariants(variants) {
+	if !validPhotoVariants(variants) {
+		return ErrInvalid
+	}
+
+	return s.markProcessed(ctx, id, lease, "photo", nil, variants)
+}
+
+func (s *Store) markProcessed(ctx context.Context, id, lease uuid.UUID, kind string, duration *int64, variants []Variant) error {
+	if id == uuid.Nil || lease == uuid.Nil {
 		return ErrInvalid
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 
 	if err != nil {
-		return fmt.Errorf("begin photo completion: %w", err)
+		return fmt.Errorf("begin media completion: %w", err)
 	}
 
 	defer tx.Rollback()
 
 	const update = `UPDATE media_assets SET state = 'processed', processed_lease_token = $2,
-			lease_token = NULL, lease_until = NULL
-		WHERE id = $1 AND kind = 'photo' AND state = 'processing'
+			lease_token = NULL, lease_until = NULL, duration_ms = $4
+		WHERE id = $1 AND kind = $3 AND state = 'processing'
 			AND lease_token = $2 AND lease_until > clock_timestamp()
 		RETURNING id`
 
 	var updated uuid.UUID
-	err = tx.QueryRowContext(ctx, update, id, lease).Scan(&updated)
+	err = tx.QueryRowContext(ctx, update, id, lease, kind, duration).Scan(&updated)
 
 	if errors.Is(err, sql.ErrNoRows) {
-		return verifyPhotoReplay(ctx, tx, id, lease, variants)
+		return verifyReplay(ctx, tx, id, lease, kind, duration, variants)
 	}
 
 	if err != nil {
-		return fmt.Errorf("finish photo processing: %w", err)
+		return fmt.Errorf("finish media processing: %w", err)
 	}
 
 	for _, variant := range variants {
 		_, err := tx.ExecContext(ctx, `INSERT INTO media_variants (asset_id, name, byte_size, sha256) VALUES ($1, $2, $3, $4)`, id, variant.Name, variant.Size, variant.SHA256[:])
 
 		if err != nil {
-			return fmt.Errorf("record photo variant: %w", err)
+			return fmt.Errorf("record media variant: %w", err)
 		}
 	}
 
@@ -79,32 +91,32 @@ func (s *Store) MarkPhotoProcessed(ctx context.Context, id, lease uuid.UUID, var
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit photo processing: %w", err)
+		return fmt.Errorf("commit media processing: %w", err)
 	}
 
 	return nil
 }
 
-func verifyPhotoReplay(ctx context.Context, tx *sql.Tx, id, lease uuid.UUID, expected []Variant) error {
+func verifyReplay(ctx context.Context, tx *sql.Tx, id, lease uuid.UUID, kind string, duration *int64, expected []Variant) error {
 	const lookup = `SELECT id FROM media_assets
-		WHERE id = $1 AND kind = 'photo' AND state = 'processed' AND processed_lease_token = $2
+		WHERE id = $1 AND kind = $3 AND state = 'processed' AND processed_lease_token = $2 AND duration_ms IS NOT DISTINCT FROM $4
 		FOR UPDATE`
 
 	var found uuid.UUID
-	err := tx.QueryRowContext(ctx, lookup, id, lease).Scan(&found)
+	err := tx.QueryRowContext(ctx, lookup, id, lease, kind, duration).Scan(&found)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrConflict
 	}
 
 	if err != nil {
-		return fmt.Errorf("check photo replay: %w", err)
+		return fmt.Errorf("check media replay: %w", err)
 	}
 
 	rows, err := tx.QueryContext(ctx, `SELECT name, byte_size, sha256 FROM media_variants WHERE asset_id = $1`, id)
 
 	if err != nil {
-		return fmt.Errorf("read photo manifest: %w", err)
+		return fmt.Errorf("read media manifest: %w", err)
 	}
 
 	defer rows.Close()
@@ -120,7 +132,7 @@ func verifyPhotoReplay(ctx context.Context, tx *sql.Tx, id, lease uuid.UUID, exp
 		var digest []byte
 
 		if err := rows.Scan(&name, &size, &digest); err != nil {
-			return fmt.Errorf("read photo manifest: %w", err)
+			return fmt.Errorf("read media manifest: %w", err)
 		}
 
 		variant, ok := remaining[name]
@@ -133,11 +145,11 @@ func verifyPhotoReplay(ctx context.Context, tx *sql.Tx, id, lease uuid.UUID, exp
 	}
 
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read photo manifest: %w", err)
+		return fmt.Errorf("read media manifest: %w", err)
 	}
 
 	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close photo manifest: %w", err)
+		return fmt.Errorf("close media manifest: %w", err)
 	}
 
 	if len(remaining) != 0 {
@@ -145,7 +157,7 @@ func verifyPhotoReplay(ctx context.Context, tx *sql.Tx, id, lease uuid.UUID, exp
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit photo replay: %w", err)
+		return fmt.Errorf("commit media replay: %w", err)
 	}
 
 	return nil

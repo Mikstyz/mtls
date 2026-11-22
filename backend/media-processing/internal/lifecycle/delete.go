@@ -81,3 +81,20 @@ func (s *Store) FinishDeletion(ctx context.Context, owner, id uuid.UUID) error {
 
 	return tx.Commit()
 }
+
+// PurgeOwnerBatch fences reservations and schedules physical deletion.
+// It returns true after every owned file set has been removed and acknowledged.
+func (s *Store) PurgeOwnerBatch(ctx context.Context, owner uuid.UUID) (bool, error) {
+	if owner == uuid.Nil {
+		return false, ErrInvalid
+	}
+	var done bool
+	err := s.db.QueryRowContext(ctx, "SELECT public.media_purge_owner_batch($1)", owner).Scan(&done)
+	return done, err
+}
+
+func (s *Store) ExpireReservations(ctx context.Context, lifetimeSeconds int) (int, error) {
+	var expired int
+	err := s.db.QueryRowContext(ctx, "SELECT public.media_expire_reservations($1)", lifetimeSeconds).Scan(&expired)
+	return expired, err
+}

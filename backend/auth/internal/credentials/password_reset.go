@@ -110,6 +110,22 @@ func (s *Store) ResetPassword(ctx context.Context, token, password string) error
 		return ErrInvalidReset
 	}
 
+	hash := sha256.Sum256([]byte(token))
+	var userID uuid.UUID
+	err = s.db.QueryRowContext(ctx, `SELECT p.user_id
+		FROM password_resets p JOIN credentials c USING(user_id)
+		WHERE p.token_hash=$1 AND p.purpose='password_reset' AND p.expires_at>statement_timestamp()
+			AND c.enabled AND c.email_verified AND c.email=p.email
+			AND c.password_revision=p.password_revision`, hash[:]).Scan(&userID)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrInvalidReset
+	}
+
+	if err != nil {
+		return fmt.Errorf("lookup password reset: %w", err)
+	}
+
 	var salt [16]byte
 
 	if _, err := rand.Read(salt[:]); err != nil {
@@ -122,7 +138,6 @@ func (s *Store) ResetPassword(ctx context.Context, token, password string) error
 		return fmt.Errorf("hash password: %w", err)
 	}
 
-	hash := sha256.Sum256([]byte(token))
 	tx, err := s.db.BeginTx(ctx, nil)
 
 	if err != nil {
@@ -130,17 +145,6 @@ func (s *Store) ResetPassword(ctx context.Context, token, password string) error
 	}
 
 	defer tx.Rollback()
-
-	var userID uuid.UUID
-	err = tx.QueryRowContext(ctx, `SELECT user_id FROM password_resets WHERE token_hash = $1 AND purpose = 'password_reset' AND expires_at > CURRENT_TIMESTAMP`, hash[:]).Scan(&userID)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrInvalidReset
-	}
-
-	if err != nil {
-		return fmt.Errorf("lookup password reset: %w", err)
-	}
 
 	var enabled bool
 	var revision int64
@@ -155,15 +159,12 @@ func (s *Store) ResetPassword(ctx context.Context, token, password string) error
 		return fmt.Errorf("lock credentials for reset: %w", err)
 	}
 
-	var found int
-	err = tx.QueryRowContext(ctx, `SELECT 1 FROM password_resets WHERE user_id = $1 AND token_hash = $2 AND password_revision = $3 AND email = $4 AND purpose = 'password_reset' AND expires_at > clock_timestamp() FOR UPDATE`, userID, hash[:], revision, email).Scan(&found)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrInvalidReset
-	}
-
+	valid, err := lockUnexpiredEmailToken(ctx, tx, userID, hash, revision, email, "password_reset")
 	if err != nil {
-		return fmt.Errorf("lock password reset: %w", err)
+		return fmt.Errorf("check password reset token: %w", err)
+	}
+	if !valid {
+		return ErrInvalidReset
 	}
 
 	const update = `UPDATE credentials SET password_salt = $1, password_hash = $2,

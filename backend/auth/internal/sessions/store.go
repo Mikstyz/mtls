@@ -275,13 +275,14 @@ func (s *Store) List(ctx context.Context, identity Identity, offset int) ([]Sess
 
 	defer tx.Rollback()
 
+	// The credentials lock may have delayed this statement.
 	const query = `
 		SELECT id, device_name, created_at, last_seen_at, expires_at,
-			last_seen_at > CURRENT_TIMESTAMP - INTERVAL '2 minutes'
+			last_seen_at > statement_timestamp() - INTERVAL '2 minutes'
 		FROM sessions
-		WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+		WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > statement_timestamp()
 			AND recovery_generation = (SELECT generation FROM session_epoch WHERE id)
-			AND last_seen_at > CURRENT_TIMESTAMP - INTERVAL '168 hours'
+			AND last_seen_at > statement_timestamp() - INTERVAL '168 hours'
 		ORDER BY created_at DESC, id
 		LIMIT 101 OFFSET $2
 	`

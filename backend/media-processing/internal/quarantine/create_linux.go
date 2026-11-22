@@ -28,6 +28,34 @@ func (s *Store) createUpload() (int, string, error) {
 		return -1, "", fmt.Errorf("create anonymous upload: %w", err)
 	}
 
+	return s.createNamedPartial()
+}
+
+// NewPartial keeps a named private file locked while an isolated tool needs its path.
+// CleanPartials can reclaim the file after a worker crash.
+func (s *Store) NewPartial() (*os.File, func(), error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, nil, errors.New("quarantine is closed")
+	}
+	fd, name, err := s.createNamedPartial()
+	if err != nil {
+		return nil, nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	return file, func() {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		defer file.Close()
+		if s.closed {
+			return
+		}
+		_ = unix.Unlinkat(s.fd, name, 0)
+	}, nil
+}
+
+func (s *Store) createNamedPartial() (int, string, error) {
 	id, err := uuid.NewRandom()
 
 	if err != nil {
@@ -35,7 +63,7 @@ func (s *Store) createUpload() (int, string, error) {
 	}
 
 	name := ".partial-" + id.String()
-	fd = -1
+	fd := -1
 
 	err = s.withLock(func() error {
 		var err error

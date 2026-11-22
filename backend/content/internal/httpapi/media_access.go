@@ -17,7 +17,12 @@ func (h *Handler) postMediaAccess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	post, postErr := uuid.Parse(r.PathValue("id"))
-	media, mediaErr := uuid.Parse(r.PathValue("media"))
+	cover := r.PathValue("cover") != ""
+	value := r.PathValue("media")
+	if cover {
+		value = r.PathValue("cover")
+	}
+	media, mediaErr := uuid.Parse(value)
 	owner := accessHeaderID(r.Header, "X-Media-Owner")
 	viewer := accessHeaderID(r.Header, "X-Viewer-ID")
 
@@ -29,7 +34,7 @@ func (h *Handler) postMediaAccess(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
-	allowed, err := h.catalog.AllowsPostMedia(ctx, post, media, owner, viewer)
+	allowed, popular, frame, err := h.catalog.AllowsPostMedia(ctx, post, media, owner, viewer, cover)
 
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -38,6 +43,14 @@ func (h *Handler) postMediaAccess(w http.ResponseWriter, r *http.Request) {
 	if !allowed {
 		http.NotFound(w, r)
 		return
+	}
+
+	if frame != "" {
+		w.Header().Set("X-Cover-Frame", frame)
+	}
+
+	if popular {
+		w.Header().Set("X-Playback-Popular", "1")
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -57,4 +70,34 @@ func accessHeaderID(header http.Header, name string) uuid.UUID {
 	}
 
 	return id
+}
+
+func (h *Handler) moderationMediaAccess(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	target, targetErr := uuid.Parse(r.PathValue("id"))
+	asset, assetErr := uuid.Parse(r.PathValue("media"))
+	owner := accessHeaderID(r.Header, "X-Media-Owner")
+	actor := accessHeaderID(r.Header, "X-Viewer-ID")
+	if targetErr != nil || assetErr != nil || target == uuid.Nil || asset == uuid.Nil || owner == uuid.Nil || actor == uuid.Nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	allowed, err := h.catalog.AllowsCaseMedia(ctx, actor, target, asset, owner)
+	if err != nil {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !allowed {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

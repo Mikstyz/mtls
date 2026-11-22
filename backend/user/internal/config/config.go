@@ -68,9 +68,13 @@ type MediaService struct {
 }
 
 type Content struct {
-	URL          string `toml:"url"`
-	PurgeSecret  string `toml:"purge_secret"`
-	SearchSecret string `toml:"search_secret"`
+	URL                   string `toml:"url"`
+	PurgeSecret           string `toml:"purge_secret"`
+	SearchSecret          string `toml:"search_secret"`
+	ProfilePointsSecret   string `toml:"profile_points_secret"`
+	MediaRevocationSecret string `toml:"media_revocation_secret"`
+	PublicationSecret     string `toml:"publication_secret"`
+	ClientURI             string `toml:"client_uri"`
 }
 
 type Search struct {

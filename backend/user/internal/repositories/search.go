@@ -7,11 +7,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
+	"mtls/shared/searchtext"
 	"mtls/user/internal/models"
 )
 
 // SearchCandidates rechecks names against the authoritative active-user table.
-func (r *userRepo) SearchCandidates(ctx context.Context, ids []uuid.UUID, query string) ([]models.SearchUser, error) {
+func (r *userRepo) SearchCandidates(ctx context.Context, ids []uuid.UUID, query, prefix string) ([]models.SearchUser, error) {
 	if len(ids) == 0 {
 		return []models.SearchUser{}, nil
 	}
@@ -24,9 +25,9 @@ func (r *userRepo) SearchCandidates(ctx context.Context, ids []uuid.UUID, query 
 	const sqlQuery = `SELECT u.id, u.nickname
         FROM unnest($1::uuid[]) WITH ORDINALITY AS candidate(id, position)
         JOIN users AS u ON u.id = candidate.id
-        WHERE to_tsvector('simple', u.nickname) @@ plainto_tsquery('simple', $2)
+        WHERE to_tsvector('simple', u.nickname) @@ ` + searchtext.SQLQuery + `
         ORDER BY candidate.position`
-	rows, err := r.db.QueryContext(ctx, sqlQuery, pq.Array(raw), query)
+	rows, err := r.db.QueryContext(ctx, sqlQuery, pq.Array(raw), query, prefix)
 	if err != nil {
 		return nil, fmt.Errorf("recheck user search candidates: %w", err)
 	}

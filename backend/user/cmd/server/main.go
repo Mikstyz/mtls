@@ -25,6 +25,7 @@ import (
 	sharedconfig "mtls/shared/config"
 	"mtls/user/internal/config"
 	"mtls/user/internal/contentcleanup"
+	"mtls/user/internal/contentdelivery"
 	"mtls/user/internal/httpapi"
 	"mtls/user/internal/repositories"
 	"mtls/user/internal/searchindex"
@@ -158,7 +159,8 @@ func run() error {
 
 	const schemaCheck = `SELECT u.nickname, u.presence_visibility, d.deleted_at, d.presence_visibility, p.last_seen, r.nickname, l.operation, m.ready, m.revoked_at, m.media_kind, g.user_id, e.version, c.user_id
 		FROM users u, deleted_users d, user_presence p, registration_provisions r,
-			account_lifecycle_operations l, media_permissions m, media_permission_grants g, user_search_events e, content_purge_events c LIMIT 0`
+			account_lifecycle_operations l, media_permissions m, media_permission_grants g, user_search_events e, content_purge_events c,
+            user_profile_images pi, user_profile_image_history ph LIMIT 0`
 
 	rows, err := db.QueryContext(ctx, schemaCheck)
 
@@ -168,6 +170,43 @@ func run() error {
 
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("check database schema: %w", err)
+	}
+
+	const profileReportPrivileges = `SELECT
+		has_function_privilege(current_user,'public.user_report_profile_image(uuid,uuid,uuid,text,uuid,text)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_own_profile_image_report(uuid,uuid)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_purge_profile_image_reports(uuid)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_profile_image_blocked(uuid,uuid)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_profile_image_moderation_queue(uuid)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_decide_profile_image_report(uuid,uuid,uuid,text)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_profile_image_notices(uuid)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_submit_profile_image_appeal(uuid,uuid,text)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_profile_image_appeal_queue(uuid)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_profile_moderation_media_owner(uuid,uuid,uuid)','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_review_profile_image_appeal(uuid,uuid,text)','EXECUTE')
+		AND NOT has_any_column_privilege(current_user,'public.user_profile_image_appeals','SELECT,INSERT,UPDATE')
+		AND NOT has_table_privilege(current_user,'public.user_profile_image_appeals','DELETE,TRUNCATE,TRIGGER')
+		AND has_function_privilege(current_user,'public.user_claim_media_revocation()','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_ack_media_revocation(uuid,uuid)','EXECUTE')
+		AND NOT has_any_column_privilege(current_user,'public.user_media_revocation_outbox','SELECT,INSERT,UPDATE')
+		AND NOT has_table_privilege(current_user,'public.user_media_revocation_outbox','DELETE,TRUNCATE,TRIGGER')
+		AND has_function_privilege(current_user,'public.user_claim_profile_points_event()','EXECUTE')
+		AND has_function_privilege(current_user,'public.user_ack_profile_points_event(bigint,uuid)','EXECUTE')
+		AND NOT has_any_column_privilege(current_user,'public.user_profile_moderation_outbox','SELECT,INSERT,UPDATE')
+		AND NOT has_table_privilege(current_user,'public.user_profile_moderation_outbox','DELETE,TRUNCATE,TRIGGER')
+		AND NOT has_any_column_privilege(current_user,'public.user_profile_image_holds','SELECT,INSERT,UPDATE')
+		AND NOT has_table_privilege(current_user,'public.user_profile_image_holds','DELETE,TRUNCATE,TRIGGER')
+		AND NOT has_any_column_privilege(current_user,'public.user_profile_image_decisions','SELECT,INSERT,UPDATE')
+		AND NOT has_table_privilege(current_user,'public.user_profile_image_decisions','DELETE,TRUNCATE,TRIGGER')
+		AND NOT has_any_column_privilege(current_user,'public.user_profile_image_reports','SELECT,INSERT,UPDATE')
+		AND NOT has_table_privilege(current_user,'public.user_profile_image_reports','DELETE,TRUNCATE,TRIGGER')`
+
+	var profileReportsAllowed bool
+	if err := db.QueryRowContext(ctx, profileReportPrivileges).Scan(&profileReportsAllowed); err != nil {
+		return fmt.Errorf("check profile report privileges: %w", err)
+	}
+	if !profileReportsAllowed {
+		return errors.New("invalid profile report privileges")
 	}
 
 	cookieName := "__Host-mtls_session"
@@ -254,6 +293,38 @@ func run() error {
 		}
 	}
 
+	var publishers []*contentdelivery.Publisher
+	for _, delivery := range []struct {
+		secret string
+		new    func(*sql.DB, string, string) (*contentdelivery.Publisher, error)
+	}{
+		{secret: service.Content.ProfilePointsSecret, new: contentdelivery.NewProfilePoints},
+		{secret: service.Content.MediaRevocationSecret, new: contentdelivery.NewMediaRevocations},
+	} {
+		if delivery.secret == "" {
+			continue
+		}
+		for _, key := range []string{
+			authToUser, userToAuth, cfg.Security.PreviousAuthToUserSecret, cfg.Security.PreviousUserToAuthSecret,
+			service.Search.ReaderSecret, service.Search.WriterSecret, service.Content.SearchSecret, service.Content.PurgeSecret,
+			cfg.Services.Content.InternalSecret, cfg.Services.Content.PurgeSecret,
+			service.Content.PublicationSecret, service.Media.Secret, service.Media.PreviousSecret,
+		} {
+			if key == delivery.secret {
+				return errors.New("content delivery credentials must be distinct")
+			}
+		}
+		if service.Content.ProfilePointsSecret == service.Content.MediaRevocationSecret {
+			return errors.New("content delivery credentials must be distinct")
+		}
+
+		publisher, err := delivery.new(db, service.Content.URL, delivery.secret)
+		if err != nil {
+			return err
+		}
+		publishers = append(publishers, publisher)
+	}
+
 	var contentPublisher *contentcleanup.Publisher
 
 	if service.Content.URL != "" && service.Content.PurgeSecret == "" {
@@ -295,6 +366,18 @@ func run() error {
 
 		if err := handler.ConfigureMediaService(service.Media.Secret, service.Media.PreviousSecret, service.Media.ClientURI); err != nil {
 			return fmt.Errorf("media service configuration: %w", err)
+		}
+	}
+
+	if service.Content.ClientURI != "" || service.Content.PublicationSecret != "" {
+		for _, secret := range []string{authToUser, userToAuth, cfg.Security.PreviousAuthToUserSecret, cfg.Security.PreviousUserToAuthSecret, service.Media.Secret, service.Media.PreviousSecret, service.Search.ReaderSecret, service.Search.WriterSecret, service.Content.SearchSecret, service.Content.PurgeSecret, cfg.Services.Content.InternalSecret, cfg.Services.Content.PurgeSecret} {
+			if secret != "" && secret == service.Content.PublicationSecret {
+				return errors.New("scheduled publication credential must be distinct")
+			}
+		}
+
+		if err := handler.ConfigureScheduledPublicationTLS(service.Content.ClientURI, service.Content.PublicationSecret); err != nil {
+			return fmt.Errorf("scheduled publication configuration: %w", err)
 		}
 	}
 
@@ -409,6 +492,21 @@ func run() error {
 		defer func() {
 			stopMaintenance()
 			<-publisherDone
+		}()
+	}
+
+	for _, publisher := range publishers {
+		if service.RecoveryMode {
+			break
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			publisher.Run(maintenanceCtx)
+		}()
+		defer func() {
+			stopMaintenance()
+			<-done
 		}()
 	}
 

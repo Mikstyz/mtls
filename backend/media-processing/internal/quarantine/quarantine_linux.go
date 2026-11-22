@@ -48,6 +48,10 @@ func Open(path string) (*Store, error) {
 	return &Store{fd: fd}, nil
 }
 
+func wholeName(id uuid.UUID) string {
+	return ".whole-" + id.String()
+}
+
 // Accept streams into an anonymous file, verifies it, and publishes it under id.
 // The guard runs before reading and again under the directory lock before publication.
 // The commit callback runs after filesystem sync while holding the same lock.
@@ -67,6 +71,22 @@ func (s *Store) Accept(ctx context.Context, id uuid.UUID, size int64, expected [
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	if err := guard(ctx); err != nil {
+		return err
+	}
+
+	name := wholeName(id)
+	var marker *os.File
+	err := s.withLock(func() error {
+		var err error
+		marker, err = s.openLockedFile(name, unix.O_CREAT|unix.O_RDWR)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	defer marker.Close()
 
 	if err := guard(ctx); err != nil {
 		return err
@@ -145,7 +165,14 @@ func (s *Store) Accept(ctx context.Context, id uuid.UUID, size int64, expected [
 			return err
 		}
 
-		return commit(ctx)
+		if err := commit(ctx); err != nil {
+			return err
+		}
+		if err := unix.Unlinkat(s.fd, name, 0); err != nil {
+			return fmt.Errorf("remove whole upload lock file: %w", err)
+		}
+
+		return s.syncRoot()
 	})
 }
 
@@ -208,6 +235,21 @@ func (s *Store) Remove(ctx context.Context, id uuid.UUID, guard func(context.Con
 
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+
+		for _, name := range []string{resumeName(id), wholeName(id)} {
+			file, err := s.openLockedFile(name, unix.O_RDONLY)
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+
+			if err := unix.Unlinkat(s.fd, name, 0); err != nil {
+				return fmt.Errorf("remove upload working file: %w", err)
+			}
 		}
 
 		if err := unix.Unlinkat(s.fd, id.String(), 0); err != nil && !errors.Is(err, unix.ENOENT) {

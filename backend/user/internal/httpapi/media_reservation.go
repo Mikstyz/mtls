@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/google/uuid"
 	"mtls/user/internal/repositories"
@@ -107,7 +108,7 @@ func (h *Handler) reserveMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	identity, ok := h.authenticate(w, r)
+	identity, ok := h.authenticateParticipant(w, r)
 
 	if !ok {
 		return
@@ -144,8 +145,18 @@ func (h *Handler) markMediaReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var duration *int64
+	if values := r.Header.Values("X-Media-Duration-Ms"); len(values) != 0 {
+		value, err := strconv.ParseInt(values[0], 10, 64)
+		if kind != "video" || len(values) != 1 || err != nil || value < 1 || value > 86400000 {
+			http.Error(w, "invalid media duration", http.StatusBadRequest)
+			return
+		}
+		duration = &value
+	}
+
 	h.updateMediaPolicy(w, r, func(ctx context.Context, owner, media uuid.UUID) error {
-		return h.users.MarkMediaReady(ctx, owner, media, kind)
+		return h.users.MarkMediaReady(ctx, owner, media, kind, duration)
 	})
 }
 

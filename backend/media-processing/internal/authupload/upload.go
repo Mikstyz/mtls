@@ -40,7 +40,7 @@ func (s *Service) Reserve(ctx context.Context, token string, request uuid.UUID, 
 		return lifecycle.Asset{}, userclient.ErrInvalid
 	}
 
-	owner, err := s.users.Identity(ctx, token)
+	owner, err := s.users.UploadIdentity(ctx, token)
 
 	if err != nil {
 		return lifecycle.Asset{}, err
@@ -65,7 +65,7 @@ func (s *Service) Receive(ctx context.Context, token string, media uuid.UUID, si
 		return userclient.ErrInvalid
 	}
 
-	owner, err := s.users.Identity(ctx, token)
+	owner, err := s.users.UploadIdentity(ctx, token)
 
 	if err != nil {
 		return err
@@ -80,6 +80,36 @@ func (s *Service) Receive(ctx context.Context, token string, media uuid.UUID, si
 		return nil
 	}
 
+	if err := s.ledger.BeginUpload(ctx, owner, media, size, digest, false); err != nil {
+		return err
+	}
+
+	guard, commit := s.uploadCallbacks(token, owner, media, size, digest)
+	return s.files.Accept(ctx, media, size, digest, source, guard, commit)
+}
+
+func (s *Service) ReceiveChunk(ctx context.Context, token string, media uuid.UUID, chunk quarantine.Chunk, source io.Reader) (int64, error) {
+	owner, err := s.users.UploadIdentity(ctx, token)
+	if err != nil {
+		return 0, err
+	}
+
+	completed, err := s.ledger.UploadComplete(ctx, owner, media, chunk.Total, chunk.Digest)
+	if err != nil {
+		return 0, err
+	}
+	if completed {
+		return chunk.Total, nil
+	}
+	if err := s.ledger.BeginUpload(ctx, owner, media, chunk.Total, chunk.Digest, true); err != nil {
+		return 0, err
+	}
+
+	guard, commit := s.uploadCallbacks(token, owner, media, chunk.Total, chunk.Digest)
+	return s.files.Append(ctx, media, chunk, source, guard, commit)
+}
+
+func (s *Service) uploadCallbacks(token string, owner, media uuid.UUID, size int64, digest [32]byte) (func(context.Context) error, func(context.Context) error) {
 	guard := func(ctx context.Context) error {
 		if err := s.ledger.CheckUpload(ctx, owner, media, size, digest); err != nil {
 			return err
@@ -92,17 +122,28 @@ func (s *Service) Receive(ctx context.Context, token string, media uuid.UUID, si
 		return s.ledger.MarkUploaded(ctx, owner, media, size, digest)
 	}
 
-	return s.files.Accept(ctx, media, size, digest, source, guard, commit)
+	return guard, commit
 }
 
 // Status returns the progress of an upload belonging to the current session.
-func (s *Service) Status(ctx context.Context, token string, media uuid.UUID) (string, error) {
+func (s *Service) Status(ctx context.Context, token string, media uuid.UUID) (lifecycle.UploadProgress, error) {
 	owner, err := s.users.Identity(ctx, token)
 	if err != nil {
-		return "", err
+		return lifecycle.UploadProgress{}, err
 	}
 
-	return s.ledger.UploadStatus(ctx, owner, media)
+	progress, err := s.ledger.UploadStatus(ctx, owner, media)
+	if err != nil || !progress.Resumable {
+		return progress, err
+	}
+
+	offset, err := s.files.UploadOffset(media)
+	if err != nil {
+		return lifecycle.UploadProgress{}, err
+	}
+
+	progress.Offset = &offset
+	return progress, nil
 }
 
 // Delete records a deletion for the upload owner. The queue revokes access
@@ -114,4 +155,14 @@ func (s *Service) Delete(ctx context.Context, token string, media uuid.UUID) err
 	}
 
 	return s.ledger.BeginDelete(ctx, owner, media)
+}
+
+// History lists uploads owned by the current session.
+func (s *Service) History(ctx context.Context, token string, before *lifecycle.UploadPosition) ([]lifecycle.UploadHistoryItem, error) {
+	owner, err := s.users.Identity(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.ledger.UploadHistory(ctx, owner, before)
 }

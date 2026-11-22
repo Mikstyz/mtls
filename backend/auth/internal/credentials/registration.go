@@ -241,6 +241,17 @@ func (s *Store) ConfirmRegistration(ctx context.Context, token, password string)
 		return uuid.Nil, "", ErrInvalidConfirmation
 	}
 
+	hash := sha256.Sum256([]byte(token))
+	var pending bool
+	const find = `SELECT EXISTS (SELECT 1 FROM registrations
+		WHERE token_hash = $1 AND confirmed_at IS NULL AND expires_at > statement_timestamp())`
+	if err := s.db.QueryRowContext(ctx, find, hash[:]).Scan(&pending); err != nil {
+		return uuid.Nil, "", fmt.Errorf("look up registration token: %w", err)
+	}
+	if !pending {
+		return uuid.Nil, "", ErrInvalidConfirmation
+	}
+
 	var salt [16]byte
 
 	if _, err := rand.Read(salt[:]); err != nil {
@@ -261,14 +272,20 @@ func (s *Store) ConfirmRegistration(ctx context.Context, token, password string)
 
 	defer tx.Rollback()
 
-	hash := sha256.Sum256([]byte(token))
-	const query = `UPDATE registrations SET confirmed_at = CURRENT_TIMESTAMP
-		WHERE token_hash = $1 AND confirmed_at IS NULL AND expires_at > clock_timestamp()
-		RETURNING user_id, nickname`
-
 	var id uuid.UUID
+	const lock = `SELECT user_id FROM registrations WHERE token_hash = $1 AND confirmed_at IS NULL FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, lock, hash[:]).Scan(&id); errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, "", ErrInvalidConfirmation
+	} else if err != nil {
+		return uuid.Nil, "", fmt.Errorf("lock registration confirmation: %w", err)
+	}
+
+	const query = `UPDATE registrations SET confirmed_at = clock_timestamp()
+		WHERE user_id = $1 AND expires_at > clock_timestamp()
+		RETURNING nickname`
+
 	var nickname string
-	err = tx.QueryRowContext(ctx, query, hash[:]).Scan(&id, &nickname)
+	err = tx.QueryRowContext(ctx, query, id).Scan(&nickname)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return uuid.Nil, "", ErrInvalidConfirmation

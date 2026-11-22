@@ -26,7 +26,7 @@ func (h *Handler) purgeAuthor(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	err = h.purger.PurgeAuthor(ctx, author)
+	err = h.purger.PurgeAuthor(ctx, author, len(r.Header.Values("X-Media-Purge-Complete")) == 1 && r.Header.Get("X-Media-Purge-Complete") == "1")
 	if errors.Is(err, catalog.ErrCleanupInProgress) {
 		w.WriteHeader(http.StatusAccepted)
 		return

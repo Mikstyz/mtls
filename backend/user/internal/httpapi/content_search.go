@@ -10,16 +10,18 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
 
 type contentSearchResult struct {
-	ID       uuid.UUID `json:"id"`
-	AuthorID uuid.UUID `json:"author_id"`
-	Kind     string    `json:"kind"`
-	Title    string    `json:"title"`
+	ID           uuid.UUID  `json:"id"`
+	AuthorID     uuid.UUID  `json:"author_id"`
+	Kind         string     `json:"kind"`
+	Title        string     `json:"title"`
+	CoverMediaID *uuid.UUID `json:"cover_media_id,omitempty"`
 }
 
 // SetContentSearchService is called at startup before serving requests.
@@ -48,38 +50,15 @@ func (h *Handler) SetContentSearchService(address, secret string) error {
 }
 
 func (h *Handler) searchContent(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authenticate(w, r); !ok {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	page, ok := h.readSearchPage(w, r.WithContext(ctx), "content")
+	if !ok {
 		return
 	}
 
-	params, err := url.ParseQuery(r.URL.RawQuery)
-
-	if err != nil || len(params) != 1 || len(params["q"]) != 1 {
-		http.Error(w, "invalid query", http.StatusBadRequest)
-		return
-	}
-
-	query := params.Get("q")
-
-	if strings.TrimSpace(query) == "" || len(query) > 256 || !utf8.ValidString(query) || strings.ContainsRune(query, 0) {
-		http.Error(w, "invalid query", http.StatusBadRequest)
-		return
-	}
-
-	if h.contentSearchURL == "" {
-		http.Error(w, "unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	ids, err := h.searchCandidates(r.Context(), "content", query)
-
-	if err != nil {
-		http.Error(w, "unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	results, err := h.recheckContentSearch(r.Context(), ids, query)
-
+	results, err := h.recheckContentSearch(ctx, page.IDs, page.Query, page.Prefix)
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
@@ -95,14 +74,14 @@ func (h *Handler) searchContent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	profiles, err := h.users.ExistingProfiles(r.Context(), authors)
+	profiles, err := h.users.ExistingProfiles(ctx, authors)
 
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	active, err := h.activeAccounts(r.Context(), profiles)
+	active, err := h.activeAccounts(ctx, profiles)
 
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -118,19 +97,21 @@ func (h *Handler) searchContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, struct {
-		Posts []contentSearchResult `json:"posts"`
-	}{Posts: visible})
+		Posts      []contentSearchResult `json:"posts"`
+		NextCursor string                `json:"next_cursor,omitempty"`
+	}{Posts: visible[:min(len(visible), page.Limit)], NextCursor: page.NextCursor})
 }
 
-func (h *Handler) recheckContentSearch(ctx context.Context, ids []uuid.UUID, query string) ([]contentSearchResult, error) {
+func (h *Handler) recheckContentSearch(ctx context.Context, ids []uuid.UUID, query, prefix string) ([]contentSearchResult, error) {
 	if len(ids) == 0 {
 		return []contentSearchResult{}, nil
 	}
 
 	body, err := json.Marshal(struct {
-		Query string      `json:"query"`
-		IDs   []uuid.UUID `json:"ids"`
-	}{Query: query, IDs: ids})
+		Query  string      `json:"query"`
+		Prefix string      `json:"prefix,omitempty"`
+		IDs    []uuid.UUID `json:"ids"`
+	}{Query: query, Prefix: prefix, IDs: ids})
 
 	if err != nil {
 		return nil, errors.New("cannot encode content search")
@@ -172,7 +153,8 @@ func (h *Handler) recheckContentSearch(ctx context.Context, ids []uuid.UUID, que
 			position++
 		}
 
-		if position == len(ids) || result.ID == uuid.Nil || result.AuthorID == uuid.Nil || (result.Kind != "photo" && result.Kind != "video") || len(result.Title) > 800 || !utf8.ValidString(result.Title) {
+		if position == len(ids) || result.ID == uuid.Nil || result.AuthorID == uuid.Nil || (result.Kind != "photo" && result.Kind != "video") || len(result.Title) > 800 || !utf8.ValidString(result.Title) ||
+			(result.CoverMediaID != nil && *result.CoverMediaID == uuid.Nil) {
 			return nil, errors.New("invalid content search result")
 		}
 

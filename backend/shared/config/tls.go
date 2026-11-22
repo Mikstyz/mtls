@@ -44,9 +44,7 @@ func (cfg ServiceTLS) ServerConfig() (*tls.Config, bool, error) {
 		return nil, false, errors.New("client certificate verification requires server TLS")
 	}
 
-	identity, err := url.Parse(cfg.ClientURI)
-
-	if err != nil || identity == nil || identity.Scheme != "spiffe" || identity.Hostname() == "" || identity.Port() != "" || identity.Path == "" || identity.Path == "/" || identity.User != nil || identity.RawQuery != "" || identity.Fragment != "" || identity.Opaque != "" {
+	if !ValidSPIFFEURI(cfg.ClientURI) {
 		return nil, false, errors.New("a valid expected SPIFFE client URI is required")
 	}
 
@@ -60,6 +58,13 @@ func (cfg ServiceTLS) ServerConfig() (*tls.Config, bool, error) {
 	server.ClientCAs = pool
 
 	return server, true, nil
+}
+
+func ValidSPIFFEURI(value string) bool {
+	identity, err := url.Parse(value)
+	return err == nil && identity.Scheme == "spiffe" && identity.Hostname() != "" && identity.Port() == "" &&
+		identity.Path != "" && identity.Path != "/" && identity.User == nil && identity.RawQuery == "" &&
+		!identity.ForceQuery && identity.Fragment == "" && identity.Opaque == ""
 }
 
 // MatchesClientURI checks the verified leaf certificate's URI SAN exactly.

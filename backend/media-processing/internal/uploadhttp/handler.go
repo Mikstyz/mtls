@@ -19,10 +19,12 @@ import (
 )
 
 type Service interface {
+	History(context.Context, string, *lifecycle.UploadPosition) ([]lifecycle.UploadHistoryItem, error)
 	Delete(context.Context, string, uuid.UUID) error
-	Status(context.Context, string, uuid.UUID) (string, error)
+	Status(context.Context, string, uuid.UUID) (lifecycle.UploadProgress, error)
 	Reserve(context.Context, string, uuid.UUID, string, int64, [32]byte) (lifecycle.Asset, error)
 	Receive(context.Context, string, uuid.UUID, int64, [32]byte, io.Reader) error
+	ReceiveChunk(context.Context, string, uuid.UUID, quarantine.Chunk, io.Reader) (int64, error)
 }
 
 type handler struct {
@@ -45,6 +47,8 @@ func New(service Service, origin, cookie string, maxBytes int64, concurrent int)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/media/uploads", h.reserve)
 	mux.HandleFunc("PUT /api/media/uploads/{id}", h.receive)
+	mux.HandleFunc("PATCH /api/media/uploads/{id}", h.receiveChunk)
+	mux.HandleFunc("GET /api/media/uploads", h.history)
 	mux.HandleFunc("GET /api/media/uploads/{id}", h.status)
 	mux.HandleFunc("DELETE /api/media/uploads/{id}", h.delete)
 
@@ -208,7 +212,7 @@ func (h *handler) status(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	state, err := h.service.Status(ctx, token, id)
+	progress, err := h.service.Status(ctx, token, id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -216,9 +220,9 @@ func (h *handler) status(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
-		ID    uuid.UUID `json:"id"`
-		State string    `json:"state"`
-	}{id, state})
+		ID uuid.UUID `json:"id"`
+		lifecycle.UploadProgress
+	}{id, progress})
 }
 
 func (h *handler) delete(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +280,9 @@ func writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "upload not found", http.StatusNotFound)
 	case errors.Is(err, lifecycle.ErrQuota):
 		http.Error(w, "upload quota exceeded", http.StatusTooManyRequests)
+	case errors.Is(err, quarantine.ErrBusy):
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "upload temporarily busy", http.StatusServiceUnavailable)
 	case errors.Is(err, quarantine.ErrMismatch):
 		http.Error(w, "upload checksum or size mismatch", http.StatusUnprocessableEntity)
 	case errors.Is(err, lifecycle.ErrInvalid), errors.Is(err, userclient.ErrInvalid):

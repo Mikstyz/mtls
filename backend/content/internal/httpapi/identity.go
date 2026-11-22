@@ -9,12 +9,16 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"mtls/content/internal/catalog"
+	sharedconfig "mtls/shared/config"
 )
+
+var errForbidden = errors.New("operation forbidden")
 
 var errUnauthorized = errors.New("session unauthorized")
 
@@ -24,21 +28,25 @@ type userClient struct {
 	client     *http.Client
 }
 
-func newUserClient(address, cookieName string) (*userClient, error) {
+func newUserClient(address, cookieName string, settings sharedconfig.ServiceTLS) (*userClient, error) {
 	parsed, err := url.Parse(address)
 
-	if err != nil || parsed == nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return nil, errors.New("invalid user service URL")
 	}
 
 	ip := net.ParseIP(parsed.Hostname())
 
-	if ip == nil || !ip.IsLoopback() || (cookieName != "mtls_session" && cookieName != "__Host-mtls_session") {
+	local := parsed.Scheme == "http" && ip != nil && ip.IsLoopback()
+	mutualTLS := parsed.Scheme == "https" && settings.PeerCAFile != "" && settings.PeerCertFile != "" && settings.PeerKeyFile != ""
+	if (!local && !mutualTLS) || (cookieName != "mtls_session" && cookieName != "__Host-mtls_session") {
 		return nil, errors.New("invalid user service settings")
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
+	transport, err := settings.ClientTransport(address)
+	if err != nil {
+		return nil, err
+	}
 	return &userClient{
 		url:        strings.TrimRight(address, "/"),
 		cookieName: cookieName,
@@ -53,6 +61,10 @@ func newUserClient(address, cookieName string) (*userClient, error) {
 }
 
 func (u *userClient) author(ctx context.Context, request *http.Request) (uuid.UUID, error) {
+	return u.sessionUser(ctx, request, "/api/users/me/participation")
+}
+
+func (u *userClient) sessionUser(ctx context.Context, request *http.Request, path string) (uuid.UUID, error) {
 	cookies := request.CookiesNamed(u.cookieName)
 
 	if len(cookies) != 1 || len(cookies[0].Value) != 43 {
@@ -65,7 +77,7 @@ func (u *userClient) author(ctx context.Context, request *http.Request) (uuid.UU
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.url+"/api/users/me", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.url+path, nil)
 
 	if err != nil {
 		return uuid.Nil, errors.New("user service unavailable")
@@ -82,6 +94,10 @@ func (u *userClient) author(ctx context.Context, request *http.Request) (uuid.UU
 
 	if response.StatusCode == http.StatusUnauthorized {
 		return uuid.Nil, errUnauthorized
+	}
+
+	if response.StatusCode == http.StatusForbidden {
+		return uuid.Nil, errForbidden
 	}
 
 	if response.StatusCode != http.StatusOK {
@@ -149,31 +165,53 @@ func (u *userClient) checkMediaOwner(ctx context.Context, request *http.Request,
 }
 
 func (u *userClient) ownedMediaKind(ctx context.Context, request *http.Request, id uuid.UUID) (string, error) {
+	kind, _, err := u.ownedMedia(ctx, request, id)
+	return kind, err
+}
+
+func (u *userClient) ownedMedia(ctx context.Context, request *http.Request, id uuid.UUID) (string, *int64, error) {
 	cookie, err := request.Cookie(u.cookieName)
 	if err != nil {
-		return "", errUnauthorized
+		return "", nil, errUnauthorized
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.url+"/api/users/media/"+id.String()+"/ownership", nil)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	req.AddCookie(cookie)
 	resp, err := u.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusNoContent:
-		return resp.Header.Get("X-Media-Kind"), nil
+		kind := resp.Header.Get("X-Media-Kind")
+		duration, err := readMediaDuration(resp.Header, kind)
+		return kind, duration, err
 	case http.StatusUnauthorized:
-		return "", errUnauthorized
+		return "", nil, errUnauthorized
 	case http.StatusNotFound:
-		return "", errMediaUnavailable
+		return "", nil, errMediaUnavailable
 	default:
-		return "", errors.New("user service unavailable")
+		return "", nil, errors.New("user service unavailable")
 	}
+}
+
+func readMediaDuration(headers http.Header, kind string) (*int64, error) {
+	values := headers.Values("X-Media-Duration-Ms")
+	if len(values) == 0 {
+		return nil, nil
+	}
+	if len(values) != 1 || kind != "video" {
+		return nil, errors.New("invalid media duration")
+	}
+	duration, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil || duration < 1 || duration > 86400000 {
+		return nil, errors.New("invalid media duration")
+	}
+	return &duration, nil
 }

@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"mtls/media-processing/internal/deletion"
 	"mtls/media-processing/internal/lifecycle"
 	"mtls/media-processing/internal/photo"
@@ -47,6 +49,14 @@ func run(ctx context.Context, path string) error {
 	}
 
 	settings := cfg.Services.MediaProcessing.PhotoQueue
+	ttl := settings.ReservationTTLSeconds
+	if ttl == 0 {
+		ttl = 24 * 60 * 60
+	}
+	if ttl < 3600 || ttl > 30*24*60*60 {
+		return errors.New("reservation_ttl_seconds must be between one hour and 30 days")
+	}
+
 	quarantinePath, preparedPath, err := runconfig.StoragePaths(settings.Quarantine, settings.Prepared)
 	if err != nil {
 		return err
@@ -84,7 +94,37 @@ func run(ctx context.Context, path string) error {
 
 	ledger := lifecycle.New(db)
 	cleaner := deletion.New(ledger, private, prepared, users)
+	nextOwnerPurge := time.Now()
+	nextSweep := time.Now()
 	for ctx.Err() == nil {
+		if !time.Now().Before(nextOwnerPurge) {
+			poll, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := purgeOwner(poll, ledger, users)
+			cancel()
+			nextOwnerPurge = time.Now().Add(2 * time.Second)
+			if err != nil && ctx.Err() == nil {
+				log.Print("media owner cleanup unavailable")
+				nextOwnerPurge = time.Now().Add(15 * time.Second)
+			}
+		}
+		if !time.Now().Before(nextSweep) {
+			sweep, cancel := context.WithTimeout(ctx, 15*time.Second)
+			expired, expiryErr := ledger.ExpireReservations(sweep, ttl)
+			_, privateErr := private.CleanPartials(sweep, 100)
+			_, preparedErr := prepared.CleanStages(sweep, 100)
+			cancel()
+			nextSweep = time.Now().Add(5 * time.Minute)
+			if expired == 100 {
+				nextSweep = time.Now().Add(time.Second)
+			}
+			if expiryErr != nil || privateErr != nil || preparedErr != nil {
+				nextSweep = time.Now().Add(30 * time.Second)
+				if ctx.Err() == nil {
+					log.Print("media queue could not finish temporary file cleanup")
+				}
+			}
+		}
+
 		cleanup, cancel := context.WithTimeout(ctx, 15*time.Second)
 		if err := cleanNext(cleanup, ledger, cleaner); err != nil && ctx.Err() == nil {
 			log.Print("photo queue could not clean media deletion")
@@ -147,7 +187,7 @@ func deliverReady(ctx context.Context, ledger *lifecycle.Store, users *userclien
 		return err
 	}
 
-	if err := users.MarkReady(ctx, event.OwnerID, event.AssetID); err != nil {
+	if err := users.MarkReady(ctx, event.OwnerID, event.AssetID, event.Kind, event.DurationMillis); err != nil {
 		return errors.Join(err, ledger.DeferReady(ctx, event.AssetID))
 	}
 
@@ -170,4 +210,16 @@ func cleanNext(ctx context.Context, ledger *lifecycle.Store, cleaner *deletion.S
 	}
 
 	return nil
+}
+
+func purgeOwner(ctx context.Context, ledger *lifecycle.Store, users *userclient.Client) error {
+	owner, err := users.NextPurge(ctx)
+	if err != nil || owner == uuid.Nil {
+		return err
+	}
+	done, err := ledger.PurgeOwnerBatch(ctx, owner)
+	if err != nil || !done {
+		return err
+	}
+	return users.FinishPurge(ctx, owner)
 }

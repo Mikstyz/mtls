@@ -11,12 +11,13 @@ import (
 
 // MediaAccessOwner checks the current policy and both profiles in one snapshot.
 // For a post request, content supplies the additional publication decision.
-func (r *userRepo) MediaAccessOwner(ctx context.Context, mediaID, viewerID uuid.UUID, postScoped bool) (uuid.UUID, bool, error) {
+func (r *userRepo) MediaAccessOwner(ctx context.Context, mediaID, viewerID uuid.UUID, postScoped bool) (uuid.UUID, string, *int64, bool, error) {
 	if mediaID == uuid.Nil || viewerID == uuid.Nil {
-		return uuid.Nil, false, nil
+		return uuid.Nil, "", nil, false, nil
 	}
 
-	const query = `SELECT permission.owner_id FROM media_permissions AS permission
+	const query = `SELECT permission.owner_id, CASE permission.media_kind
+          WHEN 'photo' THEN viewer.photo_quality WHEN 'video' THEN viewer.video_quality ELSE 'auto' END, permission.duration_ms FROM media_permissions AS permission
         JOIN users AS owner ON owner.id = permission.owner_id
         JOIN users AS viewer ON viewer.id = $2
         WHERE permission.media_id = $1 AND permission.ready AND permission.revoked_at IS NULL
@@ -26,14 +27,16 @@ func (r *userRepo) MediaAccessOwner(ctx context.Context, mediaID, viewerID uuid.
             ))`
 
 	var owner uuid.UUID
-	if err := r.db.QueryRowContext(ctx, query, mediaID, viewerID, postScoped).Scan(&owner); err != nil {
+	var quality string
+	var duration *int64
+	if err := r.db.QueryRowContext(ctx, query, mediaID, viewerID, postScoped).Scan(&owner, &quality, &duration); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return uuid.Nil, false, nil
+			return uuid.Nil, "", nil, false, nil
 		}
-		return uuid.Nil, false, fmt.Errorf("check media access: %w", err)
+		return uuid.Nil, "", nil, false, fmt.Errorf("check media access: %w", err)
 	}
 
-	return owner, true, nil
+	return owner, quality, duration, true, nil
 }
 
 // ReadyMediaKind returns processing metadata for a still-ready owned asset.

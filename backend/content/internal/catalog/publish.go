@@ -42,9 +42,9 @@ func (s *Store) DraftForPublication(ctx context.Context, author, id uuid.UUID, r
 	return draft, nil
 }
 
-func (s *Store) PublishPost(ctx context.Context, author, id uuid.UUID, revision int64, visibility string) (int64, error) {
+func (s *Store) PublishPost(ctx context.Context, author, id uuid.UUID, revision int64, visibility string, duration *int64) (int64, error) {
 	var next int64
-	err := s.db.QueryRowContext(ctx, `SELECT public.content_publish_post($1, $2, $3, $4)`, author, id, revision, visibility).Scan(&next)
+	err := s.db.QueryRowContext(ctx, `SELECT public.content_publish_post_duration($1, $2, $3, $4,$5)`, author, id, revision, visibility, duration).Scan(&next)
 	if err != nil {
 		return 0, fmt.Errorf("publish draft: %w", err)
 	}

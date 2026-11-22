@@ -27,6 +27,12 @@ pub(crate) struct Index {
     slots: Arc<Semaphore>,
 }
 
+pub(crate) struct RankPosition {
+    pub(crate) id: Uuid,
+    pub(crate) rank: f32,
+    pub(crate) snapshot: i64,
+}
+
 impl Index {
     pub(crate) fn new(db: Client, max_requests: usize) -> Self {
         Self {
@@ -145,5 +151,59 @@ impl Index {
         .map_err(|_| Unavailable)?;
 
         Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    }
+
+    pub(crate) async fn search_page(
+        self: &Arc<Self>,
+        kind: String,
+        query: String,
+        prefix: String,
+        limit: i64,
+        before: Option<RankPosition>,
+    ) -> Result<Vec<RankPosition>, Unavailable> {
+        let permit = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Unavailable)?;
+        let index = self.clone();
+        let (snapshot, rank, id) = match before {
+            Some(before) => (Some(before.snapshot), Some(before.rank), Some(before.id)),
+            None => (None, None, None),
+        };
+
+        let rows = tokio::spawn(async move {
+            let _permit = permit;
+            index.db.query(
+                "WITH fence AS (
+                     SELECT COALESCE($4::bigint, (SELECT max(source_version) FROM search_documents WHERE kind=$1), 0) AS version
+                 ),
+                 terms AS (
+                     SELECT CASE WHEN $7::text = '' THEN plainto_tsquery('simple', $2)
+                            ELSE plainto_tsquery('simple', $2) && to_tsquery('simple', $7 || ':*') END AS query
+                 ),
+                 matches AS (
+                     SELECT d.id, ts_rank_cd(d.document, terms.query) AS rank, fence.version
+                     FROM search_documents d CROSS JOIN fence CROSS JOIN terms
+                     WHERE d.kind=$1 AND NOT d.deleted AND d.source_version<=fence.version
+                         AND d.document @@ terms.query
+                 )
+                 SELECT id, rank, version FROM matches
+                 WHERE $5::real IS NULL OR rank < $5 OR (rank=$5 AND id>$6::uuid)
+                 ORDER BY rank DESC, id
+                 LIMIT $3",
+                &[&kind, &query, &limit, &snapshot, &rank, &id, &prefix],
+            ).await
+        }).await.map_err(|_| Unavailable)?.map_err(|_| Unavailable)?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(RankPosition {
+                    id: row.try_get(0).map_err(|_| Unavailable)?,
+                    rank: row.try_get(1).map_err(|_| Unavailable)?,
+                    snapshot: row.try_get(2).map_err(|_| Unavailable)?,
+                })
+            })
+            .collect()
     }
 }

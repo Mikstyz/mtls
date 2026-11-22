@@ -5,7 +5,9 @@ import "net/http"
 // RecoveryMode prevents access to restored content until reconciliation.
 func RecoveryMode(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/health" && r.URL.RawQuery == "" {
+		health := r.Method == http.MethodGet && r.URL.Path == "/health"
+		replay := r.Method == http.MethodPost && (r.URL.Path == "/internal/profile-moderation/points" || r.URL.Path == "/internal/media-revocations")
+		if (health || replay) && r.URL.RawQuery == "" {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -18,7 +18,7 @@ var (
 )
 
 // PurgeAuthor removes a bounded batch and retains its marker until cleanup finishes.
-func (s *Store) PurgeAuthor(ctx context.Context, author uuid.UUID) error {
+func (s *Store) PurgeAuthor(ctx context.Context, author uuid.UUID, mediaRemoved bool) error {
 	if author == uuid.Nil {
 		return errors.New("invalid author")
 	}
@@ -39,6 +39,10 @@ func (s *Store) PurgeAuthor(ctx context.Context, author uuid.UUID) error {
 		return fmt.Errorf("record author content purge: %w", err)
 	}
 
+	if _, err := tx.ExecContext(ctx, `SELECT public.content_purge_points($1)`, author); err != nil {
+		return fmt.Errorf("purge moderation points: %w", err)
+	}
+
 	var reactionsRemoved bool
 	if err := tx.QueryRowContext(ctx, `SELECT public.content_purge_viewer_reactions($1)`, author).Scan(&reactionsRemoved); err != nil {
 		return fmt.Errorf("purge viewer reactions: %w", err)
@@ -46,6 +50,26 @@ func (s *Store) PurgeAuthor(ctx context.Context, author uuid.UUID) error {
 	if !reactionsRemoved {
 		if err := tx.QueryRowContext(ctx, `SELECT public.content_purge_view_receipts($1)`, author).Scan(&reactionsRemoved); err != nil {
 			return fmt.Errorf("purge viewer receipts: %w", err)
+		}
+	}
+	if !reactionsRemoved {
+		if err := tx.QueryRowContext(ctx, `SELECT public.content_purge_comments($1)`, author).Scan(&reactionsRemoved); err != nil {
+			return fmt.Errorf("purge comments: %w", err)
+		}
+	}
+	if !reactionsRemoved {
+		if err := tx.QueryRowContext(ctx, `SELECT public.content_purge_test_orders($1)`, author).Scan(&reactionsRemoved); err != nil {
+			return fmt.Errorf("purge test orders: %w", err)
+		}
+	}
+	if !reactionsRemoved {
+		if err := tx.QueryRowContext(ctx, `SELECT public.content_purge_ad_deliveries($1)`, author).Scan(&reactionsRemoved); err != nil {
+			return fmt.Errorf("purge ad deliveries: %w", err)
+		}
+	}
+	if !reactionsRemoved {
+		if err := tx.QueryRowContext(ctx, `SELECT public.content_purge_reporter($1)`, author).Scan(&reactionsRemoved); err != nil {
+			return fmt.Errorf("purge authored reports: %w", err)
 		}
 	}
 	if reactionsRemoved {
@@ -61,7 +85,7 @@ func (s *Store) PurgeAuthor(ctx context.Context, author uuid.UUID) error {
 		return err
 	}
 
-	if err := removePurgeBatch(ctx, tx, author, ids); err != nil {
+	if err := removePurgeBatch(ctx, tx, author, ids, mediaRemoved); err != nil {
 		if !errors.Is(err, ErrMediaCleanupPending) {
 			return err
 		}
@@ -131,7 +155,7 @@ func lockPurgeBatch(ctx context.Context, tx *sql.Tx, author uuid.UUID) ([]string
 	return ids, nil
 }
 
-func removePurgeBatch(ctx context.Context, tx *sql.Tx, author uuid.UUID, ids []string) error {
+func removePurgeBatch(ctx context.Context, tx *sql.Tx, author uuid.UUID, ids []string, mediaRemoved bool) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -142,7 +166,7 @@ func removePurgeBatch(ctx context.Context, tx *sql.Tx, author uuid.UUID, ids []s
 		return fmt.Errorf("check author media: %w", err)
 	}
 
-	if hasMedia {
+	if hasMedia && !mediaRemoved {
 		return ErrMediaCleanupPending
 	}
 

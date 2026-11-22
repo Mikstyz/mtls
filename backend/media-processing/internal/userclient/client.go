@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,13 +95,21 @@ func (c *Client) cookie(token string) (*http.Cookie, error) {
 
 // Identity resolves the current session through user and auth.
 func (c *Client) Identity(ctx context.Context, token string) (uuid.UUID, error) {
+	return c.identity(ctx, token, "/api/users/me")
+}
+
+func (c *Client) UploadIdentity(ctx context.Context, token string) (uuid.UUID, error) {
+	return c.identity(ctx, token, "/api/users/me/participation")
+}
+
+func (c *Client) identity(ctx context.Context, token, path string) (uuid.UUID, error) {
 	cookie, err := c.cookie(token)
 
 	if err != nil || ctx == nil {
 		return uuid.Nil, ErrInvalid
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/users/me", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 
 	if err != nil {
 		return uuid.Nil, ErrInvalid
@@ -117,6 +126,10 @@ func (c *Client) Identity(ctx context.Context, token string) (uuid.UUID, error) 
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return uuid.Nil, ErrUnauthenticated
+	}
+
+	if resp.StatusCode == http.StatusForbidden {
+		return uuid.Nil, ErrForbidden
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -183,15 +196,19 @@ func (c *Client) Reserve(ctx context.Context, token string, owner, media uuid.UU
 }
 
 // MarkReady reports a committed processing result using the service credential.
-func (c *Client) MarkReady(ctx context.Context, owner, media uuid.UUID) error {
-	return c.updatePolicy(ctx, owner, media, "ready", "photo")
+func (c *Client) MarkReady(ctx context.Context, owner, media uuid.UUID, kind string, duration *int64) error {
+	if kind != "photo" && kind != "video" {
+		return ErrInvalid
+	}
+
+	return c.updatePolicy(ctx, owner, media, "ready", kind, duration)
 }
 
 func (c *Client) Revoke(ctx context.Context, owner, media uuid.UUID) error {
-	return c.updatePolicy(ctx, owner, media, "revoke", "")
+	return c.updatePolicy(ctx, owner, media, "revoke", "", nil)
 }
 
-func (c *Client) updatePolicy(ctx context.Context, owner, media uuid.UUID, action, kind string) error {
+func (c *Client) updatePolicy(ctx context.Context, owner, media uuid.UUID, action, kind string, duration *int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base+"/internal/media/"+media.String()+"/"+action, nil)
 	if err != nil {
 		return ErrInvalid
@@ -201,6 +218,9 @@ func (c *Client) updatePolicy(ctx context.Context, owner, media uuid.UUID, actio
 	req.Header.Set("X-Media-Owner", owner.String())
 	if kind != "" {
 		req.Header.Set("X-Media-Kind", kind)
+	}
+	if duration != nil {
+		req.Header.Set("X-Media-Duration-Ms", strconv.FormatInt(*duration, 10))
 	}
 	resp, err := c.http.Do(req)
 

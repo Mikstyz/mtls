@@ -150,11 +150,16 @@ func (s *Store) BeginOwnerRestore(ctx context.Context, userID uuid.UUID, revisio
 		return fmt.Errorf("generate restore operation: %w", err)
 	}
 
-	const query = `UPDATE account_deletions d SET state = $1, operation_id = $2,
+	// Read the deadline from the locked row so time spent waiting counts toward the limit.
+	const query = `WITH locked_deletion AS MATERIALIZED (
+		SELECT user_id, deleted_at FROM account_deletions
+		WHERE user_id = $3 AND state = 'deleted' FOR UPDATE
+	)
+	UPDATE account_deletions d SET state = $1, operation_id = $2,
 		available_at = CURRENT_TIMESTAMP, attempts = 0
-		FROM credentials c WHERE d.user_id = $3 AND c.user_id = d.user_id
-			AND NOT c.enabled AND c.password_revision = $4 AND d.state = 'deleted'
-			AND d.deleted_at + INTERVAL '336 hours' > clock_timestamp()`
+		FROM locked_deletion l JOIN credentials c ON c.user_id = l.user_id
+		WHERE d.user_id = l.user_id AND NOT c.enabled AND c.password_revision = $4
+			AND l.deleted_at + INTERVAL '336 hours' > clock_timestamp()`
 
 	result, err := s.db.ExecContext(ctx, query, "restoring_owner", opID, userID, revision)
 
@@ -214,11 +219,15 @@ func (s *Store) BeginModeratorRestore(ctx context.Context, moderatorID, sessionI
 		return err
 	}
 
-	const update = `UPDATE account_deletions d SET state = 'restoring_moderator', operation_id = $1,
+	const update = `WITH locked_deletion AS MATERIALIZED (
+		SELECT user_id, deleted_at FROM account_deletions
+		WHERE user_id = $2 AND state = 'deleted' FOR UPDATE
+	)
+	UPDATE account_deletions d SET state = 'restoring_moderator', operation_id = $1,
 		available_at = CURRENT_TIMESTAMP, attempts = 0
-		FROM credentials c WHERE d.user_id = $2 AND c.user_id = d.user_id
-			AND NOT c.enabled AND d.state = 'deleted'
-			AND ((d.deleted_at AT TIME ZONE 'UTC') + INTERVAL '2 months') AT TIME ZONE 'UTC' > clock_timestamp()`
+		FROM locked_deletion l JOIN credentials c ON c.user_id = l.user_id
+		WHERE d.user_id = l.user_id AND NOT c.enabled
+			AND ((l.deleted_at AT TIME ZONE 'UTC') + INTERVAL '2 months') AT TIME ZONE 'UTC' > clock_timestamp()`
 
 	result, err := tx.ExecContext(ctx, update, opID, targetID)
 

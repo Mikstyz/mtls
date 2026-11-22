@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use crate::index::{Document, Index, UpdateOutcome};
+use crate::index::{Document, Index, RankPosition, UpdateOutcome};
 
 pub(crate) struct Credentials {
     pub(crate) reader: Vec<u8>,
@@ -33,11 +33,28 @@ struct SearchQuery {
     kind: String,
     q: String,
     limit: Option<i64>,
+    before_id: Option<Uuid>,
+    before_rank: Option<f32>,
+    snapshot: Option<i64>,
+    prefix: Option<String>,
 }
 
 #[derive(Serialize)]
 struct Candidate {
     id: Uuid,
+}
+
+#[derive(Serialize)]
+struct PagePosition {
+    id: Uuid,
+    rank: f32,
+    snapshot: i64,
+}
+
+#[derive(Serialize)]
+struct SearchPage {
+    candidates: Vec<Candidate>,
+    next: Option<PagePosition>,
 }
 
 pub(crate) fn router(index: Arc<Index>, credentials: Credentials) -> Router {
@@ -47,6 +64,7 @@ pub(crate) fn router(index: Arc<Index>, credentials: Credentials) -> Router {
         .route("/health", get(health))
         .route("/internal/documents/{kind}/{id}", put(update_document))
         .route("/internal/search", get(search))
+        .route("/internal/search/page", get(search_page))
         .layer(DefaultBodyLimit::max(8192))
         .layer(middleware::map_response(
             |mut response: axum::response::Response| async move {
@@ -149,11 +167,11 @@ async fn search(
 
     let limit = query.limit.unwrap_or(20);
 
-    if !valid_kind(&query.kind)
-        || query.q.trim().is_empty()
-        || query.q.len() > 256
-        || query.q.contains('\0')
-        || !(1..=50).contains(&limit)
+    if !query.is_valid(limit)
+        || query.before_id.is_some()
+        || query.before_rank.is_some()
+        || query.snapshot.is_some()
+        || query.prefix.is_some()
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -165,4 +183,90 @@ async fn search(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
 
     Ok(Json(ids.into_iter().map(|id| Candidate { id }).collect()))
+}
+
+impl SearchQuery {
+    fn is_valid(&self, limit: i64) -> bool {
+        let (has_terms, prefix_len) = match self.prefix.as_deref() {
+            None => (!self.q.trim().is_empty(), 0),
+            Some(prefix) => (
+                prefix.len() <= 64
+                    && prefix.chars().count() >= 2
+                    && prefix.chars().all(char::is_alphanumeric),
+                prefix.len(),
+            ),
+        };
+
+        valid_kind(&self.kind)
+            && has_terms
+            && self.q.len() + prefix_len <= 256
+            && !self.q.contains('\0')
+            && (1..=50).contains(&limit)
+    }
+}
+
+async fn search_page(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<SearchPage>, StatusCode> {
+    let credentials = &app.credentials;
+    if !authorized(
+        &headers,
+        &credentials.reader,
+        credentials.reader_previous.as_deref(),
+    ) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let limit = query.limit.unwrap_or(20);
+    if !query.is_valid(limit) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if query.prefix.is_some()
+        && (query.before_id.is_some() || query.before_rank.is_some() || query.snapshot.is_some())
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let before = match (query.before_id, query.before_rank, query.snapshot) {
+        (None, None, None) => None,
+        (Some(id), Some(rank), Some(snapshot))
+            if !id.is_nil() && rank.is_finite() && rank >= 0.0 && snapshot > 0 =>
+        {
+            Some(RankPosition { id, rank, snapshot })
+        }
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let mut rows = app
+        .index
+        .search_page(
+            query.kind,
+            query.q,
+            query.prefix.unwrap_or_default(),
+            limit + 1,
+            before,
+        )
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let next = if rows.len() > limit as usize {
+        rows.truncate(limit as usize);
+        rows.last().map(|row| PagePosition {
+            id: row.id,
+            rank: row.rank,
+            snapshot: row.snapshot,
+        })
+    } else {
+        None
+    };
+
+    Ok(Json(SearchPage {
+        candidates: rows
+            .into_iter()
+            .map(|row| Candidate { id: row.id })
+            .collect(),
+        next,
+    }))
 }

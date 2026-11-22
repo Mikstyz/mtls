@@ -2,10 +2,10 @@ package catalog
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -17,39 +17,35 @@ var (
 
 // EditDraft uses the revision returned by ListDrafts to prevent lost updates.
 func (s *Store) EditDraft(ctx context.Context, author, id uuid.UUID, revision int64, title, description string) (int64, error) {
+	return s.editPost(ctx, author, id, revision, title, description, "draft")
+}
+
+func (s *Store) EditPublishedPost(ctx context.Context, author, id uuid.UUID, revision int64, title, description string) (int64, error) {
+	if strings.TrimSpace(title) == "" {
+		return 0, ErrInvalidDraft
+	}
+	return s.editPost(ctx, author, id, revision, title, description, "published")
+}
+
+func (s *Store) editPost(ctx context.Context, author, id uuid.UUID, revision int64, title, description, status string) (int64, error) {
 	if author == uuid.Nil || id == uuid.Nil || revision < 1 || revision == math.MaxInt64 || !validDraftText(title, description) {
 		return 0, ErrInvalidDraft
 	}
 
-	const query = `UPDATE content_posts
-		SET title = $4, description = $5, revision = revision + 1
-		WHERE author_id = $1 AND id = $2 AND revision = $3
-			AND status = 'draft' AND visibility = 'private'
-		RETURNING revision`
-
+	const query = `SELECT public.content_edit_post($1,$2,$3,$4,$5,$6)`
 	var next int64
-	err := s.db.QueryRowContext(ctx, query, author, id, revision, title, description).Scan(&next)
+	if err := s.db.QueryRowContext(ctx, query, author, id, revision, title, description, status).Scan(&next); err != nil {
+		return 0, fmt.Errorf("edit post: %w", err)
+	}
 
-	if err == nil {
+	switch next {
+	case -2:
+		return 0, ErrInvalidDraft
+	case -1:
+		return 0, ErrDraftNotFound
+	case 0:
+		return 0, ErrDraftVersionConflict
+	default:
 		return next, nil
 	}
-
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("edit draft: %w", err)
-	}
-
-	var exists bool
-	err = s.db.QueryRowContext(ctx, `SELECT EXISTS (
-		SELECT 1 FROM content_posts WHERE author_id = $1 AND id = $2 AND status = 'draft' AND visibility = 'private'
-	)`, author, id).Scan(&exists)
-
-	if err != nil {
-		return 0, fmt.Errorf("check draft: %w", err)
-	}
-
-	if exists {
-		return 0, ErrDraftVersionConflict
-	}
-
-	return 0, ErrDraftNotFound
 }

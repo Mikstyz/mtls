@@ -229,6 +229,7 @@ func (h *Handler) RunRegistration(ctx context.Context) {
 		{10 * time.Second, h.provisionRegistration},
 		{30 * time.Second, h.deliverPasswordReset},
 		{30 * time.Second, h.deliverEmailVerification},
+		{30 * time.Second, h.deliverEmailChange},
 	}
 
 	var running sync.WaitGroup

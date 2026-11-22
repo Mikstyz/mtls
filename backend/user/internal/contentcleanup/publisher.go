@@ -73,7 +73,7 @@ func (p *Publisher) claim(ctx context.Context) (*event, error) {
 
 	var item event
 	err = tx.QueryRowContext(ctx, `SELECT user_id FROM content_purge_events
-        WHERE lease_until IS NULL OR lease_until < clock_timestamp()
+        WHERE media_finished AND (lease_until IS NULL OR lease_until < clock_timestamp())
         ORDER BY created_at, user_id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&item.userID)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -124,6 +124,7 @@ func (p *Publisher) DeliverOne(ctx context.Context) (bool, error) {
 	}
 
 	request.Header.Set("X-Internal-Secret", p.secret)
+	request.Header.Set("X-Media-Purge-Complete", "1")
 	response, err := p.client.Do(request)
 
 	if err != nil {

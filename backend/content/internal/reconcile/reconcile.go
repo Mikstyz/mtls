@@ -61,7 +61,7 @@ func Offline(ctx context.Context, auth, content *sql.DB, apply bool) (int64, err
 
 	if _, err := contentTx.ExecContext(ctx, `LOCK TABLE content_posts, content_post_media,
 		content_draft_requests, content_author_purges, content_post_likes, content_post_favorites,
-		content_post_statistics, content_post_view_receipts IN ACCESS EXCLUSIVE MODE NOWAIT`); err != nil {
+		content_post_statistics, content_post_view_receipts, content_comments, content_test_orders, content_test_offers, content_ad_deliveries, content_reports, content_moderation_events, content_moderation_appeals, content_points_accounts, content_points_ledger, content_points_warnings, content_points_bans, content_scheduled_posts IN ACCESS EXCLUSIVE MODE NOWAIT`); err != nil {
 		return 0, fmt.Errorf("lock content data: %w", err)
 	}
 
@@ -92,7 +92,7 @@ func Offline(ctx context.Context, auth, content *sql.DB, apply bool) (int64, err
 	if err := contentTx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_class
 		WHERE oid = ANY(ARRAY['content_posts'::regclass, 'content_post_media'::regclass,
 			'content_draft_requests'::regclass, 'content_author_purges'::regclass, 'content_post_likes'::regclass,
-			'content_post_favorites'::regclass, 'content_post_statistics'::regclass, 'content_post_view_receipts'::regclass])
+			'content_post_favorites'::regclass, 'content_post_statistics'::regclass, 'content_post_view_receipts'::regclass, 'content_comments'::regclass, 'content_test_orders'::regclass, 'content_test_offers'::regclass, 'content_ad_deliveries'::regclass, 'content_reports'::regclass, 'content_moderation_events'::regclass, 'content_moderation_appeals'::regclass, 'content_points_accounts'::regclass, 'content_points_ledger'::regclass, 'content_points_warnings'::regclass, 'content_points_bans'::regclass, 'content_scheduled_posts'::regclass])
 		AND (relrowsecurity OR relforcerowsecurity))`).Scan(&contentRLS); err != nil {
 		return 0, fmt.Errorf("inspect content row security: %w", err)
 	}
@@ -121,6 +121,11 @@ func Offline(ctx context.Context, auth, content *sql.DB, apply bool) (int64, err
 			UNION SELECT viewer_id FROM content_post_likes
 			UNION SELECT viewer_id FROM content_post_favorites
 			UNION SELECT viewer_id FROM content_post_view_receipts
+            UNION SELECT author_id FROM content_comments
+            UNION SELECT buyer_id FROM content_test_orders
+            UNION SELECT viewer_id FROM content_ad_deliveries
+            UNION SELECT reporter_id FROM content_reports WHERE reporter_id IS NOT NULL
+            UNION SELECT owner_id FROM content_points_accounts
 		) AS accounts WHERE ($1::uuid IS NULL OR account_id > $1::uuid)
 		ORDER BY account_id LIMIT 500`
 		rows, err := contentTx.QueryContext(ctx, query, cursor)
@@ -260,6 +265,29 @@ func removeViewerReactions(ctx context.Context, tx *sql.Tx, id uuid.UUID) error 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM content_post_favorites WHERE viewer_id = $1`, id); err != nil {
 		return fmt.Errorf("remove viewer favorites: %w", err)
 	}
+	for {
+		var changed bool
+		if err := tx.QueryRowContext(ctx, `SELECT public.content_erase_reporter($1)`, id).Scan(&changed); err != nil {
+			return fmt.Errorf("erase reporter identity: %w", err)
+		}
+		if !changed {
+			break
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM content_points_accounts WHERE owner_id=$1`, id); err != nil {
+		return fmt.Errorf("remove moderation points: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM content_ad_deliveries WHERE viewer_id=$1`, id); err != nil {
+		return fmt.Errorf("remove ad deliveries: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM content_test_orders WHERE buyer_id=$1`, id); err != nil {
+		return fmt.Errorf("remove test orders: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM content_comments WHERE author_id=$1`, id); err != nil {
+		return fmt.Errorf("remove author comments: %w", err)
+	}
+
 	if _, err := tx.ExecContext(ctx, `DELETE FROM content_post_view_receipts WHERE viewer_id = $1`, id); err != nil {
 		return fmt.Errorf("remove viewer receipts: %w", err)
 	}

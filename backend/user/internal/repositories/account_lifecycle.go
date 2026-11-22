@@ -71,28 +71,28 @@ func (r *userRepo) ApplyAccountLifecycle(ctx context.Context, userID, operationI
 	switch operation {
 	case "deleting":
 		const query = `WITH removed AS (
-			DELETE FROM users WHERE id = $1 RETURNING id, nickname, created_at, last_online, presence_visibility
+			DELETE FROM users WHERE id = $1 RETURNING id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality
 		)
-		INSERT INTO deleted_users (id, nickname, created_at, last_online, presence_visibility, deleted_at)
-		SELECT id, nickname, created_at, last_online, presence_visibility, $2 FROM removed`
+		INSERT INTO deleted_users (id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality, deleted_at)
+		SELECT id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality, $2 FROM removed`
 		result, err = tx.ExecContext(ctx, query, userID, deletedAt)
 	case "restoring_owner":
 		const query = `WITH restored AS (
 			DELETE FROM deleted_users WHERE id = $1 AND deleted_at = $2
 				AND deleted_at + INTERVAL '336 hours' > clock_timestamp()
-			RETURNING id, nickname, created_at, last_online, presence_visibility
+			RETURNING id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality
 		)
-		INSERT INTO users (id, nickname, created_at, last_online, presence_visibility)
-		SELECT id, nickname, created_at, last_online, presence_visibility FROM restored`
+		INSERT INTO users (id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality)
+		SELECT id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality FROM restored`
 		result, err = tx.ExecContext(ctx, query, userID, deletedAt)
 	case "restoring_moderator":
 		const query = `WITH restored AS (
 			DELETE FROM deleted_users WHERE id = $1 AND deleted_at = $2
 				AND ((deleted_at AT TIME ZONE 'UTC') + INTERVAL '2 months') AT TIME ZONE 'UTC' > clock_timestamp()
-			RETURNING id, nickname, created_at, last_online, presence_visibility
+			RETURNING id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality
 		)
-		INSERT INTO users (id, nickname, created_at, last_online, presence_visibility)
-		SELECT id, nickname, created_at, last_online, presence_visibility FROM restored`
+		INSERT INTO users (id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality)
+		SELECT id, nickname, created_at, last_online, presence_visibility, photo_quality, video_quality FROM restored`
 		result, err = tx.ExecContext(ctx, query, userID, deletedAt)
 	case "purging":
 		return r.purgeLifecycle(ctx, tx, userID, deletedAt)
@@ -160,6 +160,17 @@ func (r *userRepo) purgeLifecycle(ctx context.Context, tx *sql.Tx, userID uuid.U
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO content_purge_events (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return fmt.Errorf("queue content cleanup: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_profile_images WHERE owner_id=$1`, userID); err != nil {
+		return fmt.Errorf("purge profile images: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_profile_image_history WHERE owner_id=$1`, userID); err != nil {
+		return fmt.Errorf("purge profile image history: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `SELECT public.user_purge_profile_image_reports($1)`, userID); err != nil {
+		return fmt.Errorf("purge profile image reports: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM media_permission_grants WHERE user_id = $1`, userID); err != nil {

@@ -85,12 +85,15 @@ func (p *Processor) Transcode(ctx context.Context, input *os.File, out io.Writer
 		"-format_whitelist", "mov", "-codec_whitelist", "h264,hevc,av1,vp9,aac,mp3", "-i", "/input",
 		"-map", "0:v:0", "-map", "0:a:0?", "-map_metadata", "-1", "-map_chapters", "-1",
 		"-vf", scale, "-c:v", "libx264", "-threads:v", "2", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "23",
-		"-c:a", "aac", "-ac", "2", "-ar", "48000", "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+		"-g", "10000", "-sc_threshold", "0", "-forced-idr", "1", "-force_key_frames", "expr:gte(t,n_forced*4)",
+		"-c:a", "aac", "-ac", "2", "-ar", "48000", "-movflags", "+dash+frag_keyframe+empty_moov+default_base_moof",
 		"-f", "mp4", "pipe:1",
 	}
 
 	return p.run(ctx, input, out, maxBytes, args)
 }
+
+var errNoVideoOutput = errors.New("video processor produced no output")
 
 func (p *Processor) run(ctx context.Context, input *os.File, output io.Writer, maxBytes int64, args []string) error {
 	if ctx == nil || input == nil || output == nil {
@@ -164,8 +167,11 @@ func (p *Processor) run(ctx context.Context, input *os.File, output io.Writer, m
 	if copyErr != nil {
 		return fmt.Errorf("read video processor output: %w", copyErr)
 	}
-	if waitErr != nil || n == 0 {
+	if waitErr != nil {
 		return errors.New("video processor failed")
+	}
+	if n == 0 {
+		return errNoVideoOutput
 	}
 
 	return nil

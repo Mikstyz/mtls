@@ -72,6 +72,8 @@ func validFilename(name string) bool {
 	}
 
 	switch {
+	case name == "adaptive.m3u8", name == "720p.m3u8", name == "1080p.m3u8", name == "1440p.m3u8", name == "2160p.m3u8":
+		return true
 	case strings.HasSuffix(name, ".jpg"), strings.HasSuffix(name, ".jpeg"),
 		strings.HasSuffix(name, ".png"), strings.HasSuffix(name, ".webp"),
 		strings.HasSuffix(name, ".avif"), strings.HasSuffix(name, ".mp4"),
@@ -111,7 +113,7 @@ func (s *Store) installSetLocked(ctx context.Context, id uuid.UUID, files []Inpu
 			return
 		}
 
-		if err := removeContents(fd, 0); err != nil {
+		if err := removeFiles(fd); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("clean staging directory: %w", err))
 			return
 		}

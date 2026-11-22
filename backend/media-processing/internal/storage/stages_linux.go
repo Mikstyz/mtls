@@ -91,7 +91,7 @@ func (s *Store) cleanStagesLocked(ctx context.Context, limit int) (removed int, 
 				return removed, fmt.Errorf("open abandoned staging directory: %w", err)
 			}
 
-			if err := removeContents(stageFD, 0); err != nil {
+			if err := removeFiles(stageFD); err != nil {
 				return removed, fmt.Errorf("clean abandoned staging directory: %w", err)
 			}
 

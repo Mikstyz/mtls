@@ -28,6 +28,14 @@ func (*Store) Accept(context.Context, uuid.UUID, int64, [32]byte, io.Reader, fun
 	return errors.New("quarantine requires Linux")
 }
 
+func (*Store) Append(context.Context, uuid.UUID, Chunk, io.Reader, func(context.Context) error, func(context.Context) error) (int64, error) {
+	return 0, errors.New("quarantine requires Linux")
+}
+
+func (*Store) UploadOffset(uuid.UUID) (int64, error) {
+	return 0, errors.New("quarantine requires Linux")
+}
+
 func (*Store) Read(uuid.UUID) (*os.File, error) {
 	return nil, errors.New("quarantine requires Linux")
 }

@@ -50,13 +50,21 @@ type Config struct {
 				Password *string `toml:"password"`
 			} `toml:"database"`
 			Upload     Upload `toml:"upload"`
+			VideoQueue struct {
+				Runtime            string `toml:"runtime"`
+				Supervisor         string `toml:"supervisor"`
+				MaxOutputBytes     int64  `toml:"max_output_bytes"`
+				MaxDurationSeconds int    `toml:"max_duration_seconds"`
+				JobTimeoutSeconds  int    `toml:"job_timeout_seconds"`
+			} `toml:"video_queue"`
 			PhotoQueue struct {
-				Quarantine string `toml:"quarantine"`
-				Prepared   string `toml:"prepared"`
-				Systemd    string `toml:"systemd_run"`
-				Supervisor string `toml:"supervisor"`
-				Bubblewrap string `toml:"bubblewrap"`
-				Worker     string `toml:"worker"`
+				ReservationTTLSeconds int    `toml:"reservation_ttl_seconds"`
+				Quarantine            string `toml:"quarantine"`
+				Prepared              string `toml:"prepared"`
+				Systemd               string `toml:"systemd_run"`
+				Supervisor            string `toml:"supervisor"`
+				Bubblewrap            string `toml:"bubblewrap"`
+				Worker                string `toml:"worker"`
 			} `toml:"photo_queue"`
 		} `toml:"media_processing"`
 	} `toml:"services"`

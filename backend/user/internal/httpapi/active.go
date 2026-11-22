@@ -36,14 +36,22 @@ func (h *Handler) publicProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, models.SearchUser{ID: profile.ID, Nickname: profile.Nickname})
+	images, err := h.users.ProfileImages(ctx, author)
+	if !h.handleUserError(w, err) {
+		return
+	}
+
+	writeJSON(w, struct {
+		models.SearchUser
+		models.ProfileImages
+	}{models.SearchUser{ID: profile.ID, Nickname: profile.Nickname}, images})
 }
 
 func (h *Handler) accessibleAccount(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 
-	requester, ok := h.authenticate(w, r.WithContext(ctx))
+	requester, ok := h.authenticateParticipant(w, r.WithContext(ctx))
 
 	if !ok {
 		return uuid.Nil, false

@@ -171,15 +171,12 @@ func (s *Store) ConfirmEmailVerification(ctx context.Context, token string) erro
 		return fmt.Errorf("lock credentials for email verification: %w", err)
 	}
 
-	var found int
-	err = tx.QueryRowContext(ctx, `SELECT 1 FROM password_resets WHERE user_id = $1 AND token_hash = $2 AND password_revision = $3 AND email = $4 AND purpose = 'verify_email' AND expires_at > clock_timestamp() FOR UPDATE`, userID, hash[:], revision, email).Scan(&found)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrInvalidConfirmation
-	}
-
+	valid, err := lockUnexpiredEmailToken(ctx, tx, userID, hash, revision, email, "verify_email")
 	if err != nil {
-		return fmt.Errorf("lock email verification: %w", err)
+		return fmt.Errorf("check verify email token: %w", err)
+	}
+	if !valid {
+		return ErrInvalidConfirmation
 	}
 
 	if _, err := tx.ExecContext(ctx, `UPDATE credentials SET email_verified = true WHERE user_id = $1 AND enabled`, userID); err != nil {
@@ -195,4 +192,21 @@ func (s *Store) ConfirmEmailVerification(ctx context.Context, token string) erro
 	}
 
 	return nil
+}
+
+func lockUnexpiredEmailToken(ctx context.Context, tx *sql.Tx, userID uuid.UUID, hash [32]byte, revision int64, email, purpose string) (bool, error) {
+	const lock = `SELECT id FROM password_resets
+		WHERE user_id=$1 AND token_hash=$2 AND password_revision=$3 AND email=$4 AND purpose=$5 FOR UPDATE`
+	var id uuid.UUID
+	err := tx.QueryRowContext(ctx, lock, userID, hash[:], revision, email, purpose).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	var valid bool
+	err = tx.QueryRowContext(ctx, `SELECT expires_at > clock_timestamp() FROM password_resets WHERE id=$1`, id).Scan(&valid)
+	return valid, err
 }

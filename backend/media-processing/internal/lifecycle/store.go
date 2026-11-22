@@ -51,9 +51,9 @@ func (s *Store) Claim(ctx context.Context, id uuid.UUID, duration time.Duration)
 
 	const query = `UPDATE media_assets
 		SET state = 'processing', lease_token = $2, lease_until = clock_timestamp() + $3 * INTERVAL '1 second',
-			photo_attempts = photo_attempts + CASE WHEN kind = 'photo' THEN 1 ELSE 0 END
+			processing_attempts = processing_attempts + 1
 		WHERE id = $1 AND EXISTS (SELECT 1 FROM media_uploads WHERE asset_id = $1 AND uploaded)
-			AND (kind <> 'photo' OR (photo_attempts < 5 AND photo_retry_at <= clock_timestamp()))
+			AND processing_attempts < 5 AND processing_retry_at <= clock_timestamp()
 			AND (state = 'reserved' OR (state = 'processing' AND lease_until <= clock_timestamp()))
 		RETURNING id`
 

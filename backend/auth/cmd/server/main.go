@@ -155,7 +155,7 @@ func run() error {
 	}
 
 	const schemaCheck = `SELECT c.enabled, c.email_verified, c.password_revision, s.token_hash, s.recovery_generation,
-		a.key_hash, r.token_hash, r.provision_lease_id, j.token_ciphertext, p.purpose, p.email,
+		a.key_hash, r.token_hash, r.provision_lease_id, j.token_ciphertext, p.purpose, p.email, p.pending_email,
 		d.state, roles.role, events.outcome, session_history.last_seen_at
 		FROM credentials c, sessions s, login_attempts a, registrations r, registration_mail_jobs j,
 			password_resets p, account_deletions d, account_roles roles, account_moderation_events events,

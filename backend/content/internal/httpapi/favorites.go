@@ -26,7 +26,7 @@ func (h *Handler) favorites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, token, valid := favoriteFilter(r.URL.RawQuery)
+	limit, token, valid := pageFilter(r.URL.RawQuery)
 	if !valid {
 		http.Error(w, "invalid filter", http.StatusBadRequest)
 		return
@@ -73,7 +73,11 @@ func (h *Handler) favorites(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	active, err := h.user.activeFavoriteAuthors(ctx, r, items)
+	authors := make([]uuid.UUID, 0, len(items))
+	for _, item := range items {
+		authors = append(authors, item.AuthorID)
+	}
+	active, err := h.user.activeAuthors(ctx, r, authors)
 	if err != nil {
 		writeContentError(w, r, err)
 		return
@@ -93,7 +97,7 @@ func (h *Handler) favorites(w http.ResponseWriter, r *http.Request) {
 	}{Favorites: visible, NextCursor: next})
 }
 
-func favoriteFilter(raw string) (int, string, bool) {
+func pageFilter(raw string) (int, string, bool) {
 	if len(raw) > 256 {
 		return 0, "", false
 	}
@@ -117,9 +121,9 @@ func favoriteFilter(raw string) (int, string, bool) {
 	return limit, params.Get("cursor"), true
 }
 
-func (u *userClient) activeFavoriteAuthors(ctx context.Context, r *http.Request, items []catalog.Favorite) (map[uuid.UUID]bool, error) {
-	active := make(map[uuid.UUID]bool, len(items))
-	if len(items) == 0 {
+func (u *userClient) activeAuthors(ctx context.Context, r *http.Request, authors []uuid.UUID) (map[uuid.UUID]bool, error) {
+	active := make(map[uuid.UUID]bool, len(authors))
+	if len(authors) == 0 {
 		return active, nil
 	}
 
@@ -129,11 +133,11 @@ func (u *userClient) activeFavoriteAuthors(ctx context.Context, r *http.Request,
 	}
 
 	params := make(url.Values)
-	requested := make(map[uuid.UUID]bool, len(items))
-	for _, item := range items {
-		if !requested[item.AuthorID] {
-			params.Add("id", item.AuthorID.String())
-			requested[item.AuthorID] = true
+	requested := make(map[uuid.UUID]bool, len(authors))
+	for _, author := range authors {
+		if !requested[author] {
+			params.Add("id", author.String())
+			requested[author] = true
 		}
 	}
 

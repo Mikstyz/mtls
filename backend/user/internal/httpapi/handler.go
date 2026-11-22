@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -27,10 +28,26 @@ import (
 )
 
 type UserRepository interface {
-	MediaAccessOwner(context.Context, uuid.UUID, uuid.UUID, bool) (uuid.UUID, bool, error)
-	SearchCandidates(context.Context, []uuid.UUID, string) ([]models.SearchUser, error)
+	ProfileImages(context.Context, uuid.UUID) (models.ProfileImages, error)
+	ChangeProfileImage(context.Context, uuid.UUID, string, *uuid.UUID) error
+	ProfileImageHistory(context.Context, uuid.UUID, int64) ([]models.ProfileImageChange, error)
+	ReportProfileImage(context.Context, uuid.UUID, uuid.UUID, models.ProfileImageReport) (int, error)
+	ProfileImageModerationQueue(context.Context, uuid.UUID) ([]models.ProfileImageCase, error)
+	ProfileModerationMediaOwner(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (uuid.UUID, error)
+	DecideProfileImageReport(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string) (int, error)
+	ProfileImageNotices(context.Context, uuid.UUID) ([]models.ProfileImageNotice, error)
+	ProfileImageAppeals(context.Context, uuid.UUID) ([]models.ProfileImageAppeal, error)
+	SubmitProfileImageAppeal(context.Context, uuid.UUID, uuid.UUID, string) (int, error)
+	ReviewProfileImageAppeal(context.Context, uuid.UUID, uuid.UUID, string) (int, error)
+	OwnProfileImageReport(context.Context, uuid.UUID, uuid.UUID) (models.ProfileImageReport, error)
+	NextMediaPurge(context.Context) (uuid.UUID, error)
+	FinishMediaPurge(context.Context, uuid.UUID) error
+	MediaAccessOwner(context.Context, uuid.UUID, uuid.UUID, bool) (uuid.UUID, string, *int64, bool, error)
+	PlaybackSettings(context.Context, uuid.UUID) (models.PlaybackSettings, error)
+	SetPlaybackSettings(context.Context, uuid.UUID, models.PlaybackSettings) error
+	SearchCandidates(context.Context, []uuid.UUID, string, string) ([]models.SearchUser, error)
 	ReserveMedia(context.Context, uuid.UUID, uuid.UUID) error
-	MarkMediaReady(context.Context, uuid.UUID, uuid.UUID, string) error
+	MarkMediaReady(context.Context, uuid.UUID, uuid.UUID, string, *int64) error
 	ReadyMediaKind(context.Context, uuid.UUID, uuid.UUID) (string, error)
 	RevokeMedia(context.Context, uuid.UUID, uuid.UUID) error
 	ExistingProfiles(context.Context, []uuid.UUID) ([]uuid.UUID, error)
@@ -50,6 +67,8 @@ type Handler struct {
 	searchSecret        string
 	contentSearchURL    string
 	contentSearchSecret string
+	contentClientURI    string
+	publicationSecret   string
 	secret              string
 	previousSecret      string
 	authServiceSecret   string
@@ -149,23 +168,46 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /ready", h.ready)
 	mux.HandleFunc("GET /internal/health", h.internalHealth)
 	mux.HandleFunc("GET /internal/metrics", h.internalMetrics)
+	mux.HandleFunc("GET "+scheduledPublicationCheckPath, h.scheduledPublicationCheck)
 	mux.HandleFunc("GET /internal/users/{id}/exists", h.internalUserExists)
 	mux.HandleFunc("PUT /internal/users/{id}", h.internalProvisionUser)
 	mux.HandleFunc("PUT /internal/users/{id}/lifecycle/{operation}", h.internalAccountLifecycle)
 	mux.HandleFunc("GET /api/users/media/{id}/access", h.mediaAccess)
+	mux.HandleFunc("GET /api/users/media/{id}/covers/{cover_post}/access", h.mediaAccess)
 	mux.HandleFunc("GET /api/users/media/{id}/posts/{post}/access", h.mediaAccess)
 	mux.HandleFunc("GET /api/users/{id}/access", h.accountAccess)
 	mux.HandleFunc("GET /api/users/accounts/active", h.activeAccountsForViewer)
 	mux.HandleFunc("GET /api/users/{id}/profile", h.publicProfile)
+	mux.HandleFunc("GET /api/users/{id}/profile/media/{media}/access", h.profileImageAccess)
+	mux.HandleFunc("GET /api/users/me/profile-images/history", h.profileImageHistory)
+	mux.HandleFunc("PUT /api/users/me/profile-image-reports/{report}", h.profileImageReport)
+	mux.HandleFunc("GET /api/users/me/profile-image-reports/{report}", h.profileImageReport)
+	mux.HandleFunc("GET /api/users/me/moderation/profile-image-reports", h.profileImageModeration)
+	mux.HandleFunc("PUT /api/users/me/moderation/profile-image-reports/{case}", h.profileImageModeration)
+	mux.HandleFunc("GET /api/users/me/profile-image-moderation/notices", h.profileImageOwnerModeration)
+	mux.HandleFunc("PUT /api/users/me/profile-image-moderation/appeals/{case}", h.profileImageOwnerModeration)
+	mux.HandleFunc("GET /api/users/me/moderation/profile-image-appeals", h.profileImageAppealModeration)
+	mux.HandleFunc("PUT /api/users/me/moderation/profile-image-appeals/{case}", h.profileImageAppealModeration)
+	mux.HandleFunc("PUT /api/users/me/profile-images/{slot}", h.changeProfileImage)
+	mux.HandleFunc("DELETE /api/users/me/profile-images/{slot}", h.changeProfileImage)
 	mux.HandleFunc("GET /api/users/media/{id}/ownership", h.mediaOwnership)
+	mux.HandleFunc("GET /api/users/media/{id}/moderation/{case}/access", h.moderationMediaAccess)
+	mux.HandleFunc("GET /api/users/media/{id}/profile-moderation/{case}/access", h.profileModerationMediaAccess)
+	mux.HandleFunc("POST /internal/media/owner-purges/next", h.nextMediaPurge)
+	mux.HandleFunc("PUT /internal/media/owner-purges/{owner}/complete", h.finishMediaPurge)
 	mux.HandleFunc("PUT /internal/media/{id}/reservation", h.reserveMedia)
 	mux.HandleFunc("PUT /internal/media/{id}/ready", h.markMediaReady)
 	mux.HandleFunc("PUT /internal/media/{id}/revoke", h.revokeMedia)
 	mux.HandleFunc("GET /api/users/search", h.searchUsers)
 	mux.HandleFunc("GET /api/users/search/content", h.searchContent)
 	mux.HandleFunc("GET /api/users/feed", h.feed)
+	mux.HandleFunc("GET /api/users/me/participation", h.participant)
+	mux.HandleFunc("GET /api/users/me/moderator", h.contentModerator)
+	mux.HandleFunc("GET /api/users/me/ad-operator", h.adOperator)
 	mux.HandleFunc("GET /api/users/me", h.me)
 	mux.HandleFunc("PATCH /api/users/me", h.updateMe)
+	mux.HandleFunc("GET /api/users/me/playback", h.playbackSettings)
+	mux.HandleFunc("PUT /api/users/me/playback", h.playbackSettings)
 	mux.HandleFunc("PATCH /api/users/me/privacy", h.updatePrivacy)
 	mux.HandleFunc("POST /api/users/heartbeat", h.heartbeat)
 	mux.HandleFunc("GET /api/users/{id}/presence", h.presence)
@@ -180,6 +222,7 @@ func (h *Handler) Routes() http.Handler {
 		}
 
 		mediaPath := strings.HasPrefix(r.URL.Path, "/internal/media/")
+		contentPeerPath := h.contentClientURI != "" && r.Method == http.MethodGet && r.URL.Path == scheduledPublicationCheckPath
 
 		if mediaPath {
 			if h.mediaSecret == "" || !h.authorizedMedia(r) {
@@ -201,13 +244,14 @@ func (h *Handler) Routes() http.Handler {
 					return
 				}
 			}
-		} else if h.peerClientURI != "" && strings.HasPrefix(r.URL.Path, "/internal/") && !sharedconfig.MatchesClientURI(r.TLS, h.peerClientURI) {
+		} else if !contentPeerPath && h.peerClientURI != "" && strings.HasPrefix(r.URL.Path, "/internal/") &&
+			!sharedconfig.MatchesClientURI(r.TLS, h.peerClientURI) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		internalProvision := r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/internal/users/") && h.authorizedInternal(r)
-		internalMedia := r.Method == http.MethodPut && mediaPath && h.authorizedMedia(r)
+		internalMedia := mediaPath && h.authorizedMedia(r)
 
 		if r.Method != http.MethodGet && !internalProvision && !internalMedia && r.Header.Get("Origin") != h.origin {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -226,14 +270,17 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (identity, bool) {
-	cookie, err := r.Cookie(h.cookieName)
+	return h.authenticateSession(w, r, "/internal/session")
+}
 
-	if err != nil {
+func (h *Handler) authenticateSession(w http.ResponseWriter, r *http.Request, path string) (identity, bool) {
+	cookies := r.CookiesNamed(h.cookieName)
+	if len(cookies) != 1 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return identity{}, false
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, h.authURL+"/internal/session", nil)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, h.authURL+path, nil)
 
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -241,7 +288,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (identity
 	}
 
 	req.Header.Set("X-Internal-Secret", h.authServiceSecret)
-	req.AddCookie(&http.Cookie{Name: h.cookieName, Value: cookie.Value})
+	req.AddCookie(&http.Cookie{Name: h.cookieName, Value: cookies[0].Value})
 	resp, err := h.doPeerRequest(req)
 
 	if err != nil {
@@ -251,6 +298,11 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (identity
 	}
 
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusForbidden {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return identity{}, false
+	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -276,7 +328,7 @@ func (h *Handler) mediaOwnership(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) checkMedia(w http.ResponseWriter, r *http.Request, requireOwner bool) {
-	id, ok := h.authenticate(w, r)
+	id, ok := h.authenticateParticipant(w, r)
 
 	if !ok {
 		return
@@ -290,7 +342,12 @@ func (h *Handler) checkMedia(w http.ResponseWriter, r *http.Request, requireOwne
 	}
 
 	var post uuid.UUID
-	if value := r.PathValue("post"); value != "" {
+	value := r.PathValue("post")
+	cover := r.PathValue("cover_post") != ""
+	if cover {
+		value = r.PathValue("cover_post")
+	}
+	if value != "" {
 		post, err = uuid.Parse(value)
 
 		if err != nil || post == uuid.Nil {
@@ -299,7 +356,7 @@ func (h *Handler) checkMedia(w http.ResponseWriter, r *http.Request, requireOwne
 		}
 	}
 
-	owner, allowed, err := h.users.MediaAccessOwner(r.Context(), mediaID, id.UserID, post != uuid.Nil)
+	owner, quality, duration, allowed, err := h.users.MediaAccessOwner(r.Context(), mediaID, id.UserID, post != uuid.Nil)
 
 	if err != nil {
 		log.Printf("check media access: %v", err)
@@ -323,7 +380,7 @@ func (h *Handler) checkMedia(w http.ResponseWriter, r *http.Request, requireOwne
 	}
 
 	if post != uuid.Nil {
-		allowed, err = h.checkPostMedia(r.Context(), post, mediaID, owner, id.UserID)
+		allowed, popular, frame, err := h.checkPostMedia(r.Context(), post, mediaID, owner, id.UserID, cover)
 
 		if err != nil {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -333,6 +390,15 @@ func (h *Handler) checkMedia(w http.ResponseWriter, r *http.Request, requireOwne
 			http.NotFound(w, r)
 			return
 		}
+		if cover && frame != "" {
+			w.Header().Set("X-Cover-Frame", frame)
+		}
+		w.Header().Set("X-Playback-Quality", quality)
+
+		if popular {
+			w.Header().Set("X-Playback-Popular", "1")
+		}
+
 		w.Header().Set("X-Viewer-ID", id.UserID.String())
 	}
 
@@ -351,6 +417,10 @@ func (h *Handler) checkMedia(w http.ResponseWriter, r *http.Request, requireOwne
 		}
 	}
 
+	if duration != nil {
+		w.Header().Set("X-Media-Duration-Ms", strconv.FormatInt(*duration, 10))
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -367,11 +437,19 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, user)
+	images, err := h.users.ProfileImages(r.Context(), id.UserID)
+	if !h.handleUserError(w, err) {
+		return
+	}
+
+	writeJSON(w, struct {
+		*models.User
+		models.ProfileImages
+	}{user, images})
 }
 
 func (h *Handler) updateMe(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.authenticate(w, r)
+	id, ok := h.authenticateParticipant(w, r)
 
 	if !ok {
 		return
@@ -466,7 +544,7 @@ func (h *Handler) internalProvisionUser(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.authenticate(w, r)
+	id, ok := h.authenticateParticipant(w, r)
 
 	if !ok {
 		return
@@ -480,7 +558,7 @@ func (h *Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) presence(w http.ResponseWriter, r *http.Request) {
-	requester, ok := h.authenticate(w, r)
+	requester, ok := h.authenticateParticipant(w, r)
 
 	if !ok {
 		return

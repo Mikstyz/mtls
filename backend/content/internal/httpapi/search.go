@@ -28,8 +28,9 @@ func (h *Handler) recheckSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Query string      `json:"query"`
-		IDs   []uuid.UUID `json:"ids"`
+		Query  string      `json:"query"`
+		Prefix string      `json:"prefix,omitempty"`
+		IDs    []uuid.UUID `json:"ids"`
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
@@ -49,7 +50,7 @@ func (h *Handler) recheckSearch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	results, err := h.catalog.RecheckPublicSearch(ctx, input.IDs, input.Query)
+	results, err := h.catalog.RecheckPublicSearch(ctx, input.IDs, input.Query, input.Prefix)
 
 	if errors.Is(err, catalog.ErrInvalidFilter) {
 		http.Error(w, "invalid request", http.StatusBadRequest)

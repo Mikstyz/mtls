@@ -175,6 +175,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /ready", h.ready)
 	mux.HandleFunc("GET /internal/health", h.internalHealth)
 	mux.HandleFunc("GET /internal/metrics", h.internalMetrics)
+	mux.HandleFunc("GET /internal/session/moderator", h.internalContentModerator)
+	mux.HandleFunc("GET /internal/session/ad-operator", h.internalAdOperator)
 	mux.HandleFunc("GET /internal/session", h.internalSession)
 	mux.HandleFunc("GET /internal/users/{id}/presence", h.internalPresence)
 	mux.HandleFunc("GET /internal/users/active", h.internalActiveUsers)
@@ -186,6 +188,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/password-reset/confirm", h.confirmPasswordReset)
 	mux.HandleFunc("POST /api/auth/verify-email/request", h.requestEmailVerification)
 	mux.HandleFunc("POST /api/auth/verify-email/confirm", h.confirmEmailVerification)
+	mux.HandleFunc("POST /api/auth/email-change/request", h.changeEmail)
+	mux.HandleFunc("POST /api/auth/email-change/confirm", h.changeEmail)
 	mux.HandleFunc("POST /api/auth/account/delete", h.deleteAccount)
 	mux.HandleFunc("POST /api/auth/account/restore", h.restoreAccount)
 	mux.HandleFunc("POST /api/auth/moderation/users/{id}/restore", h.moderatorRestoreAccount)
@@ -356,13 +360,12 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) identity(r *http.Request) (sessions.Identity, error) {
-	cookie, err := r.Cookie(h.cookieName)
-
-	if err != nil {
+	cookies := r.CookiesNamed(h.cookieName)
+	if len(cookies) != 1 {
 		return sessions.Identity{}, sessions.ErrInvalidSession
 	}
 
-	return h.sessions.Authenticate(r.Context(), cookie.Value)
+	return h.sessions.Authenticate(r.Context(), cookies[0].Value)
 }
 
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (sessions.Identity, bool) {

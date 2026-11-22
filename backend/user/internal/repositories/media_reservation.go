@@ -73,13 +73,14 @@ func (r *userRepo) ReserveMedia(ctx context.Context, owner, media uuid.UUID) err
 }
 
 // MarkMediaReady changes an existing policy's readiness without expanding visibility.
-func (r *userRepo) MarkMediaReady(ctx context.Context, owner, media uuid.UUID, kind string) error {
-	const query = `UPDATE media_permissions SET ready = TRUE, media_kind = $3
+func (r *userRepo) MarkMediaReady(ctx context.Context, owner, media uuid.UUID, kind string, duration *int64) error {
+	const query = `UPDATE media_permissions SET ready = TRUE, media_kind = $3,duration_ms=COALESCE(duration_ms,$4)
 		WHERE media_id = $1 AND owner_id = $2 AND revoked_at IS NULL
-		AND (media_kind IS NULL OR media_kind = $3) RETURNING media_id`
+		AND (media_kind IS NULL OR media_kind = $3)
+        AND (duration_ms IS NULL OR $4::bigint IS NULL OR duration_ms=$4) RETURNING media_id`
 
 	var id uuid.UUID
-	err := r.db.QueryRowContext(ctx, query, media, owner, kind).Scan(&id)
+	err := r.db.QueryRowContext(ctx, query, media, owner, kind, duration).Scan(&id)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrMediaConflict
@@ -99,6 +100,28 @@ func (r *userRepo) RevokeMedia(ctx context.Context, owner, media uuid.UUID) erro
 		return ErrMediaConflict
 	}
 
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := lockUserLifecycle(ctx, tx, owner); err != nil {
+		return err
+	}
+
+	var retained bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1)
+  OR EXISTS(SELECT 1 FROM deleted_users WHERE id=$1)
+  OR EXISTS(SELECT 1 FROM content_purge_events WHERE user_id=$1 AND NOT media_finished)
+  OR EXISTS(SELECT 1 FROM media_permissions WHERE media_id=$2)`, owner, media).Scan(&retained); err != nil {
+		return err
+	}
+
+	if !retained {
+		return nil
+	}
+
 	const query = `INSERT INTO media_permissions (media_id, owner_id, revoked_at)
 		VALUES ($1, $2, CURRENT_TIMESTAMP)
 		ON CONFLICT (media_id) DO UPDATE
@@ -108,7 +131,7 @@ func (r *userRepo) RevokeMedia(ctx context.Context, owner, media uuid.UUID) erro
 		RETURNING media_id`
 
 	var id uuid.UUID
-	err := r.db.QueryRowContext(ctx, query, media, owner).Scan(&id)
+	err = tx.QueryRowContext(ctx, query, media, owner).Scan(&id)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrMediaConflict
@@ -118,5 +141,5 @@ func (r *userRepo) RevokeMedia(ctx context.Context, owner, media uuid.UUID) erro
 		return fmt.Errorf("revoke media policy: %w", err)
 	}
 
-	return nil
+	return tx.Commit()
 }

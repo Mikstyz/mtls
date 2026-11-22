@@ -29,10 +29,13 @@ type Services struct {
 }
 
 type Service struct {
+	TestSales              bool          `toml:"test_sales"`
 	Host                   string        `toml:"host"`
 	Port                   int           `toml:"port"`
 	InternalSecret         string        `toml:"internal_secret"`
 	MediaViewSecret        string        `toml:"media_view_secret"`
+	ProfilePointsSecret    string        `toml:"profile_points_secret"`
+	MediaRevocationSecret  string        `toml:"media_revocation_secret"`
 	PurgeSecret            string        `toml:"purge_secret"`
 	PreviousPurgeSecret    string        `toml:"purge_secret_previous"`
 	PreviousInternalSecret string        `toml:"internal_secret_previous"`
@@ -41,6 +44,12 @@ type Service struct {
 	Database               Database      `toml:"database"`
 	User                   UserService   `toml:"user"`
 	Search                 SearchService `toml:"search"`
+	Media                  MediaService  `toml:"media"`
+}
+
+type MediaService struct {
+	URL    string `toml:"url"`
+	Secret string `toml:"internal_secret"`
 }
 
 type SearchService struct {
@@ -51,8 +60,10 @@ type SearchService struct {
 }
 
 type UserService struct {
-	URL        string `toml:"url"`
-	CookieName string `toml:"cookie_name"`
+	URL               string                  `toml:"url"`
+	CookieName        string                  `toml:"cookie_name"`
+	PublicationSecret string                  `toml:"publication_secret"`
+	TLS               sharedconfig.ServiceTLS `toml:"tls"`
 }
 
 type Database struct {
