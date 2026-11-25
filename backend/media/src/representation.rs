@@ -1,25 +1,13 @@
 pub(crate) fn file_type(name: &str) -> Option<&'static str> {
-    if name.is_empty()
-        || name.len() > 128
-        || name.contains("..")
-        || name.starts_with('.')
-        || !name.bytes().all(|b| {
-            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.')
-        })
-    {
-        return None;
-    }
-
-    match name.rsplit_once('.')?.1 {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "webp" => Some("image/webp"),
-        "avif" => Some("image/avif"),
-        "mp4" => Some("video/mp4"),
-        "webm" => Some("video/webm"),
-        "m3u8" => Some("application/vnd.apple.mpegurl"),
-        "m4s" => Some("video/iso.segment"),
-        "ts" => Some("video/mp2t"),
+    match name {
+        "original.jpg" | "preview.jpg" | "poster.jpg" | "poster-25.jpg" | "poster-60.jpg" => {
+            Some("image/jpeg")
+        }
+        "original.png" | "preview.png" => Some("image/png"),
+        "original.mp4" | "720p.mp4" | "1080p.mp4" | "1440p.mp4" | "2160p.mp4" => Some("video/mp4"),
+        "adaptive.m3u8" | "720p.m3u8" | "1080p.m3u8" | "1440p.m3u8" | "2160p.m3u8" => {
+            Some("application/vnd.apple.mpegurl")
+        }
         _ => None,
     }
 }

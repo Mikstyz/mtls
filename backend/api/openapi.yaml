@@ -1,0 +1,726 @@
+openapi: 3.1.0
+info:
+  title: MTLS browser API
+  version: 0.1.0
+  description: |
+    Draft contract for implemented browser-facing operations. This version covers
+    auth account flows and media uploads only; it is not a complete frontend API.
+paths:
+  /api/auth/register:
+    post:
+      operationId: register
+      summary: Begin email registration
+      description: A 202 response does not reveal whether the email address is available.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [login, email, nickname]
+              properties:
+                login: { type: string }
+                email: { type: string, format: email, maxLength: 254 }
+                nickname: { type: string }
+      responses:
+        '202': { description: Registration request accepted for background email delivery }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/register/resend:
+    post:
+      operationId: resendRegistration
+      summary: Request another confirmation email for a pending registration
+      description: Response is identical for unknown and eligible email addresses.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailRequest' }
+      responses:
+        '202': { description: Request accepted without extending registration expiry }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/confirm-email:
+    post:
+      operationId: confirmRegistration
+      summary: Confirm registration and choose a password
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenPasswordRequest' }
+      responses:
+        '202': { description: Confirmation accepted; profile creation continues in background }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/password-reset/request:
+    post:
+      operationId: requestPasswordReset
+      summary: Request a password reset email
+      description: Response is identical for known and unknown email addresses.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailRequest' }
+      responses:
+        '202': { description: Request accepted for background email delivery }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/password-reset/confirm:
+    post:
+      operationId: confirmPasswordReset
+      summary: Set a new password and revoke all existing sessions
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenPasswordRequest' }
+      responses:
+        '204':
+          description: Password reset; login again with the new password
+          headers:
+            Set-Cookie:
+              description: Clears any current session cookie.
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/verify-email/request:
+    post:
+      operationId: requestEmailVerification
+      summary: Request verification of an existing account's email
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordRequest' }
+      responses:
+        '202': { description: Verification email queued }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/verify-email/confirm:
+    post:
+      operationId: confirmEmailVerification
+      summary: Confirm email for an existing account
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+      responses:
+        '204': { description: Email verified }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/email-change/request:
+    post:
+      operationId: requestEmailChange
+      summary: Request changing the email address of the current account
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, writeOnly: true }
+      responses:
+        '202': { description: Confirmation email queued for the new address }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/email-change/confirm:
+    post:
+      operationId: confirmEmailChange
+      summary: Confirm new email and revoke all account sessions
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+      responses:
+        '204':
+          description: Email changed; all sessions revoked and cookie cleared
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/account/delete:
+    post:
+      operationId: deleteAccount
+      summary: Disable the account and queue its deletion
+      description: Revokes sessions immediately. The account can be restored by its owner within 14 days.
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordRequest' }
+      responses:
+        '202':
+          description: Account disabled; profile archiving queued and session cookie cleared
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/account/restore:
+    post:
+      operationId: restoreOwnAccount
+      summary: Request owner restoration within 14 days of deletion
+      description: Requires the deleted account's login or email and password.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [identifier, password]
+              properties:
+                identifier: { type: string, maxLength: 254 }
+                password: { type: string, writeOnly: true }
+      responses:
+        '202': { description: Restoration queued; login is available after completion }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/moderation/users/{id}/restore:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/UUID' }
+    post:
+      operationId: restoreAccountAsModerator
+      summary: Request moderator restoration within two calendar months of deletion
+      description: Requires the moderator role and the moderator's own password.
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordRequest' }
+      responses:
+        '202': { description: Restoration queued }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/login:
+    post:
+      operationId: login
+      summary: Create a server-side session
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [identifier, password, device_name]
+              properties:
+                identifier: { type: string, maxLength: 254 }
+                password: { type: string, maxLength: 1024, writeOnly: true }
+                device_name: { type: string, maxLength: 512 }
+                recovery_token:
+                  type: string
+                  writeOnly: true
+                  description: One-time email proof for a verified account at its session limit.
+      responses:
+        '204':
+          description: Session created
+          headers:
+            Set-Cookie:
+              description: HttpOnly, SameSite=Strict session cookie; Secure in production.
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the current session
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '204':
+          description: Session revoked and cookie cleared
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/heartbeat:
+    post:
+      operationId: authHeartbeat
+      summary: Update activity of the current session
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '204': { description: Session activity recorded }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/password:
+    post:
+      operationId: changePassword
+      summary: Change password and rotate the current session token
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, writeOnly: true }
+                new_password: { type: string, writeOnly: true }
+      responses:
+        '204':
+          description: Password changed; other sessions revoked and current cookie replaced
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/sessions:
+    get:
+      operationId: listSessions
+      summary: List active devices for the current account
+      security:
+        - session: []
+      parameters:
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 10000, default: 0 }
+      responses:
+        '200':
+          description: Up to 100 sessions in one page
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [sessions, has_more]
+                properties:
+                  sessions:
+                    type: array
+                    maxItems: 100
+                    items: { $ref: '#/components/schemas/Session' }
+                  has_more: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/sessions/{id}/revoke:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/UUID' }
+    post:
+      operationId: revokeSession
+      summary: Revoke one session, including the current one
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '204': { description: Session revoked; cookie cleared if this was the current session }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/auth/sessions/revoke-others:
+    post:
+      operationId: revokeOtherSessions
+      summary: Revoke all sessions except the current one
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '204': { description: Other sessions revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/media/uploads:
+    post:
+      operationId: reserveMediaUpload
+      summary: Reserve a photo or video upload
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [request_id, kind, size, sha256]
+              properties:
+                request_id:
+                  $ref: '#/components/schemas/UUID'
+                kind:
+                  type: string
+                  enum: [photo, video]
+                size:
+                  type: integer
+                  minimum: 1
+                  maximum: 1099511627776
+                sha256:
+                  $ref: '#/components/schemas/SHA256'
+      responses:
+        '200':
+          description: Reservation created or replayed with the same request ID and metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, state]
+                properties:
+                  id:
+                    $ref: '#/components/schemas/UUID'
+                  state:
+                    type: string
+                    enum: [reserved, processing, processed]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    get:
+      operationId: listMediaUploads
+      summary: List the owner's upload history
+      security:
+        - session: []
+      parameters:
+        - name: before_time
+          in: query
+          description: Supply together with before_id from the previous next object.
+          schema: { type: string, format: date-time }
+        - name: before_id
+          in: query
+          description: Supply together with before_time from the previous next object.
+          schema: { $ref: '#/components/schemas/UUID' }
+      responses:
+        '200':
+          description: Up to 20 uploads in descending creation order
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: '#/components/schemas/UploadHistoryItem' }
+                  next:
+                    $ref: '#/components/schemas/UploadCursor'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/media/uploads/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/UUID' }
+    get:
+      operationId: getMediaUpload
+      summary: Get the owner's upload status and resumable offset
+      security:
+        - session: []
+      responses:
+        '200':
+          description: Current processing state; processed does not itself grant public access
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    put:
+      operationId: uploadMediaWhole
+      summary: Upload the complete reserved file
+      description: Requires Content-Length. The first PUT or PATCH fixes the transfer mode.
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/UploadDigest'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '204': { description: Uploaded or matching completed upload replayed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '411': { description: Content-Length is required }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { description: File size or SHA-256 differs from the reservation }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    patch:
+      operationId: uploadMediaChunk
+      summary: Upload or retry one chunk of a reserved file
+      description: |
+        Chunks are at most 8 MiB. A zero-length final PATCH can finish a transfer
+        whose last response was lost. Read upload_offset after a broken connection.
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+        - $ref: '#/components/parameters/UploadDigest'
+        - name: Upload-Offset
+          in: header
+          required: true
+          schema: { type: integer, minimum: 0, format: int64 }
+        - name: Upload-Length
+          in: header
+          required: true
+          schema: { type: integer, minimum: 1, format: int64 }
+      requestBody:
+        required: false
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary, maxLength: 8388608 }
+      responses:
+        '204':
+          description: Chunk accepted or matching final chunk replayed
+          headers:
+            Upload-Offset:
+              schema: { type: integer, format: int64, minimum: 0 }
+              description: Next byte offset
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Offset conflict; retry from the returned offset
+          headers:
+            Upload-Offset:
+              schema: { type: integer, format: int64, minimum: 0 }
+        '411': { description: Content-Length is required }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { description: Completed file digest or size differs }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      operationId: deleteMediaUpload
+      summary: Revoke and queue cleanup of the owner's upload
+      security:
+        - session: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '202': { description: Deletion accepted; physical cleanup is asynchronous }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: mtls_session
+      description: Name can be __Host-mtls_session in a secure deployment.
+  parameters:
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      schema: { type: string, format: uri }
+      description: Must exactly match the configured browser origin on mutations.
+    UploadDigest:
+      name: X-Upload-SHA256
+      in: header
+      required: true
+      schema: { $ref: '#/components/schemas/SHA256' }
+  schemas:
+    UUID:
+      type: string
+      format: uuid
+    EmailRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+    TokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, writeOnly: true }
+    PasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password: { type: string, writeOnly: true }
+    TokenPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [token, password]
+      properties:
+        token: { type: string, writeOnly: true }
+        password: { type: string, writeOnly: true }
+    Session:
+      type: object
+      additionalProperties: false
+      required: [id, device_name, created_at, last_seen_at, expires_at, online, is_current]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        device_name: { type: string }
+        created_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        online: { type: boolean }
+        is_current: { type: boolean }
+    SHA256:
+      type: string
+      pattern: '^[0-9a-fA-F]{64}$'
+    UploadCursor:
+      type: object
+      additionalProperties: false
+      required: [id, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        created_at: { type: string, format: date-time }
+    UploadHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [id, created_at, kind, state]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        created_at: { type: string, format: date-time }
+        kind: { type: string, enum: [photo, video] }
+        state:
+          type: string
+          enum: [reserved, uploaded, processing, processed, failed, deleting, deleted]
+        size: { type: integer, format: int64, minimum: 1 }
+        deleted_at: { type: string, format: date-time }
+    UploadStatus:
+      type: object
+      additionalProperties: false
+      required: [id, state]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        state:
+          type: string
+          enum: [reserved, uploaded, processing, processed, failed]
+        cover_frames:
+          type: array
+          items: { type: string, enum: [poster-25.jpg, poster-60.jpg] }
+        upload_offset: { type: integer, format: int64, minimum: 0 }
+  responses:
+    BadRequest: { description: Invalid request or cursor }
+    Unauthorized: { description: Missing, invalid or expired session }
+    Forbidden: { description: Origin or account policy forbids this operation }
+    Conflict: { description: Reservation or transfer state conflicts with this request }
+    NotFound: { description: Upload not found for this owner }
+    TooLarge: { description: File or chunk exceeds a configured limit }
+    UnsupportedMediaType: { description: Expected JSON or application/octet-stream }
+    RateLimited: { description: Upload quota exceeded }
+    Unavailable:
+      description: Dependency unavailable or upload slots busy
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }

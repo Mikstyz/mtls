@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
@@ -61,23 +60,11 @@ func (s *Store) InstallSet(ctx context.Context, id uuid.UUID, files []InputFile)
 }
 
 func validFilename(name string) bool {
-	if name == "" || len(name) > 128 || name[0] == '.' || strings.Contains(name, "..") {
-		return false
-	}
-
-	for _, b := range []byte(name) {
-		if !(b >= 'a' && b <= 'z') && !(b >= '0' && b <= '9') && b != '-' && b != '_' && b != '.' {
-			return false
-		}
-	}
-
-	switch {
-	case name == "adaptive.m3u8", name == "720p.m3u8", name == "1080p.m3u8", name == "1440p.m3u8", name == "2160p.m3u8":
-		return true
-	case strings.HasSuffix(name, ".jpg"), strings.HasSuffix(name, ".jpeg"),
-		strings.HasSuffix(name, ".png"), strings.HasSuffix(name, ".webp"),
-		strings.HasSuffix(name, ".avif"), strings.HasSuffix(name, ".mp4"),
-		strings.HasSuffix(name, ".webm"):
+	switch name {
+	case "original.jpg", "preview.jpg", "original.png", "preview.png",
+		"poster.jpg", "poster-25.jpg", "poster-60.jpg",
+		"original.mp4", "720p.mp4", "1080p.mp4", "1440p.mp4", "2160p.mp4",
+		"adaptive.m3u8", "720p.m3u8", "1080p.m3u8", "1440p.m3u8", "2160p.m3u8":
 		return true
 	default:
 		return false
